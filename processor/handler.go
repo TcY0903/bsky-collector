@@ -140,7 +140,7 @@ func (h *Handler) enrichPosts(posts []*models.Post) {
 			continue
 		}
 
-		// Find the CID for this operation
+		// Use the CID from the post
 		targetCID := post.Cid
 		if targetCID == "" {
 			continue
@@ -175,29 +175,78 @@ func (h *Handler) enrichPosts(posts []*models.Post) {
 				break
 			}
 
+			// Extract text
 			if t, ok := record["text"].(string); ok {
 				text = t
 			}
+
+			// Extract createdAt
 			if c, ok := record["createdAt"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, c); err == nil {
 					createdAt = t
 				}
 			}
 
-			// Extract reply information if present
-			if reply, ok := record["reply"].(map[string]interface{}); ok {
-				if parent, ok := reply["parent"].(map[string]interface{}); ok {
-					if uri, ok := parent["uri"].(string); ok {
+			// Extract reply information
+			if replyVal, ok := record["reply"]; ok {
+				replyMap := make(map[string]interface{})
+				switch v := replyVal.(type) {
+				case map[string]interface{}:
+					replyMap = v
+				case map[interface{}]interface{}:
+					for key, val := range v {
+						if strKey, ok := key.(string); ok {
+							replyMap[strKey] = val
+						}
+					}
+				default:
+					h.logger.Printf("⚠️ Unknown reply type for %s: %T", post.RKey, replyVal)
+				}
+
+				// Extract parent
+				if parent, ok := replyMap["parent"]; ok {
+					parentMap := make(map[string]interface{})
+					switch v := parent.(type) {
+					case map[string]interface{}:
+						parentMap = v
+					case map[interface{}]interface{}:
+						for key, val := range v {
+							if strKey, ok := key.(string); ok {
+								parentMap[strKey] = val
+							}
+						}
+					}
+					if uri, ok := parentMap["uri"].(string); ok {
 						replyParent = uri
 					}
+					if cid, ok := parentMap["cid"].(string); ok {
+						_ = cid // You could store this if needed
+					}
 				}
-				if root, ok := reply["root"].(map[string]interface{}); ok {
-					if uri, ok := root["uri"].(string); ok {
+
+				// Extract root
+				if root, ok := replyMap["root"]; ok {
+					rootMap := make(map[string]interface{})
+					switch v := root.(type) {
+					case map[string]interface{}:
+						rootMap = v
+					case map[interface{}]interface{}:
+						for key, val := range v {
+							if strKey, ok := key.(string); ok {
+								rootMap[strKey] = val
+							}
+						}
+					}
+					if uri, ok := rootMap["uri"].(string); ok {
 						replyRoot = uri
+					}
+					if cid, ok := rootMap["cid"].(string); ok {
+						_ = cid
 					}
 				}
 			}
-			break
+
+			break // Found the target block, exit the loop
 		}
 
 		post.Text = text
