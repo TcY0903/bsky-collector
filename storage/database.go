@@ -35,8 +35,9 @@ func NewDB(connStr string) (*DB, error) {
 	return db, nil
 }
 
-// initSchema creates tables and indexes
+// initSchema creates all necessary tables.
 func (db *DB) initSchema() error {
+	// Posts table
 	postsSQL := `
 	CREATE TABLE IF NOT EXISTS posts (
 		id BIGSERIAL PRIMARY KEY,
@@ -60,13 +61,37 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_posts_reply_root ON posts(reply_root);
 	`
 
-	if _, err := db.conn.Exec(postsSQL); err != nil {
-		return fmt.Errorf("failed to create posts table: %w", err)
+	// Actors table with status field reserved
+	actorsSQL := `
+	CREATE TABLE IF NOT EXISTS actors (
+		did TEXT PRIMARY KEY,
+		handle TEXT NOT NULL,
+		display_name TEXT,
+		description TEXT,
+		avatar TEXT,
+		banner TEXT,
+		followers_count INTEGER DEFAULT 0,
+		follows_count INTEGER DEFAULT 0,
+		posts_count INTEGER DEFAULT 0,
+		status TEXT DEFAULT 'active',
+		indexed_at TIMESTAMP NOT NULL,
+		created_at TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_actors_handle ON actors(handle);
+	CREATE INDEX IF NOT EXISTS idx_actors_status ON actors(status);
+	`
+
+	queries := []string{postsSQL, actorsSQL}
+	for _, q := range queries {
+		if _, err := db.conn.Exec(q); err != nil {
+			return fmt.Errorf("failed to execute schema query: %w", err)
+		}
 	}
 
 	return nil
 }
 
+// --- Post related methods ---
 // SavePost inserts a single post into the database.
 func (db *DB) SavePost(post *models.Post) error {
 	query := `
@@ -128,11 +153,154 @@ func (db *DB) SavePostsBatch(posts []*models.Post) error {
 	return tx.Commit()
 }
 
-// GetStats returns basic statistics about the posts.
+// --- Actor related methods ---
+// SaveActor inserts or updates an actor profile.
+func (db *DB) SaveActor(actor *models.Actor) error {
+	query := `
+	INSERT INTO actors (
+		did, handle, display_name, description, avatar, banner,
+		followers_count, follows_count, posts_count, status, indexed_at, created_at
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	ON CONFLICT (did) DO UPDATE SET
+		handle = EXCLUDED.handle,
+		display_name = EXCLUDED.display_name,
+		description = EXCLUDED.description,
+		avatar = EXCLUDED.avatar,
+		banner = EXCLUDED.banner,
+		followers_count = EXCLUDED.followers_count,
+		follows_count = EXCLUDED.follows_count,
+		posts_count = EXCLUDED.posts_count,
+		status = EXCLUDED.status,
+		indexed_at = EXCLUDED.indexed_at,
+		created_at = EXCLUDED.created_at;
+	`
+
+	_, err := db.conn.Exec(query,
+		actor.DID,
+		actor.Handle,
+		actor.DisplayName,
+		actor.Description,
+		actor.Avatar,
+		actor.Banner,
+		actor.FollowersCount,
+		actor.FollowsCount,
+		actor.PostsCount,
+		actor.Status,
+		actor.IndexedAt,
+		actor.CreatedAt,
+	)
+	return err
+}
+
+// SaveActorsBatch inserts or updates multiple actors in a single transaction.
+func (db *DB) SaveActorsBatch(actors []*models.Actor) error {
+	if len(actors) == 0 {
+		return nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO actors (
+			did, handle, display_name, description, avatar, banner,
+			followers_count, follows_count, posts_count, status, indexed_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (did) DO UPDATE SET
+			handle = EXCLUDED.handle,
+			display_name = EXCLUDED.display_name,
+			description = EXCLUDED.description,
+			avatar = EXCLUDED.avatar,
+			banner = EXCLUDED.banner,
+			followers_count = EXCLUDED.followers_count,
+			follows_count = EXCLUDED.follows_count,
+			posts_count = EXCLUDED.posts_count,
+			status = EXCLUDED.status,
+			indexed_at = EXCLUDED.indexed_at,
+			created_at = EXCLUDED.created_at;
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, actor := range actors {
+		if actor.Status == "" {
+			actor.Status = "active"
+		}
+		_, err := stmt.Exec(
+			actor.DID,
+			actor.Handle,
+			actor.DisplayName,
+			actor.Description,
+			actor.Avatar,
+			actor.Banner,
+			actor.FollowersCount,
+			actor.FollowsCount,
+			actor.PostsCount,
+			actor.Status,
+			actor.IndexedAt,
+			actor.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert actor: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// ActorExists checks if an actor with the given DID exists.
+func (db *DB) ActorExists(did string) (bool, error) {
+	var count int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM actors WHERE did = $1", did).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to query actor: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GetActor returns an actor by DID.
+func (db *DB) GetActor(did string) (*models.Actor, error) {
+	var actor models.Actor
+	query := `
+	SELECT did, handle, display_name, description, avatar, banner,
+	       followers_count, follows_count, posts_count, status, indexed_at, created_at
+	FROM actors WHERE did = $1
+	`
+	err := db.conn.QueryRow(query, did).Scan(
+		&actor.DID,
+		&actor.Handle,
+		&actor.DisplayName,
+		&actor.Description,
+		&actor.Avatar,
+		&actor.Banner,
+		&actor.FollowersCount,
+		&actor.FollowsCount,
+		&actor.PostsCount,
+		&actor.Status,
+		&actor.IndexedAt,
+		&actor.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil // Actor not found
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get actor: %w", err)
+	}
+	return &actor, nil
+}
+
+// --- Stats ---
+// GetStats returns basic statistics about the stored data.
 func (db *DB) GetStats() (map[string]int64, error) {
 	stats := make(map[string]int64)
 	queries := map[string]string{
-		"total_posts": "SELECT COUNT(*) FROM posts;",
+		"total_posts":  "SELECT COUNT(*) FROM posts;",
+		"total_actors": "SELECT COUNT(*) FROM actors;",
 	}
 	for key, query := range queries {
 		var count int64

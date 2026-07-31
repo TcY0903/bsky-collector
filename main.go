@@ -17,7 +17,7 @@ import (
 func main() {
 	cfg := config.Load()
 	logger := log.New(os.Stdout, "[BSKY] ", log.LstdFlags)
-	logger.Printf("🚀 Starting Bluesky post collector (minimal version)...")
+	logger.Printf("🚀 Starting Bluesky post collector...")
 
 	db, err := storage.NewDB(cfg.DatabaseURL)
 	if err != nil {
@@ -46,12 +46,13 @@ func main() {
 		}
 	}()
 
-	handler := processor.NewHandler(cfg, db, logger)
-	defer handler.Close()
+	proc := processor.NewProcessor(cfg, db, logger)
+	proc.SetContext(ctx)
+	defer proc.Close()
 
-	go reportStats(db, logger, handler, cfg.StatsIntervalSec, ctx)
+	go reportStats(db, logger, proc, cfg.StatsIntervalSec, ctx)
 
-	logger.Printf("🔄 Starting event processing (posts only)...")
+	logger.Printf("🔄 Starting event processing...")
 	postCount := 0
 
 	for {
@@ -70,7 +71,7 @@ func main() {
 				return
 			}
 
-			if err := handler.ProcessPost(post); err != nil {
+			if err := proc.ProcessPost(post); err != nil {
 				logger.Printf("❌ Failed to process post: %v", err)
 				continue
 			}
@@ -84,7 +85,7 @@ func main() {
 	}
 }
 
-func reportStats(db *storage.DB, logger *log.Logger, handler *processor.Handler, interval int, ctx context.Context) {
+func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, interval int, ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 
@@ -99,10 +100,11 @@ func reportStats(db *storage.DB, logger *log.Logger, handler *processor.Handler,
 				continue
 			}
 
-			eventsPerSec, _ := handler.GetThroughput()
+			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Throughput=%.1f posts/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
+				stats["total_actors"],
 				eventsPerSec,
 			)
 		}
