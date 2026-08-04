@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"bsky-collector/config"
-	"bsky-collector/firehose"
 	"bsky-collector/processor"
 	"bsky-collector/storage"
+	"bsky-collector/stream"
 )
 
 func main() {
 	cfg := config.Load()
 	logger := log.New(os.Stdout, "[BSKY] ", log.LstdFlags)
-	logger.Printf("🚀 Starting Bluesky post collector...")
+	logger.Printf("🚀 Starting Bluesky collector...")
 
 	db, err := storage.NewDB(cfg.DatabaseURL)
 	if err != nil {
@@ -37,8 +37,8 @@ func main() {
 		cancel()
 	}()
 
-	firehoseClient := firehose.NewClient(cfg.FirehoseURL, logger)
-
+	// Firehose client (fixed URL)
+	firehoseClient := stream.NewFirehoseClient(logger)
 	go func() {
 		logger.Printf("🔌 Starting Firehose client...")
 		if err := firehoseClient.Start(ctx); err != nil {
@@ -46,6 +46,7 @@ func main() {
 		}
 	}()
 
+	// Processor (only posts, actors, labels)
 	proc := processor.NewProcessor(cfg, db, logger)
 	proc.SetContext(ctx)
 	defer proc.Close()
@@ -53,34 +54,28 @@ func main() {
 	go reportStats(db, logger, proc, cfg.StatsIntervalSec, ctx)
 
 	logger.Printf("🔄 Starting event processing...")
-	postCount := 0
+	eventCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Printf("📊 Shutting down. Total posts processed: %d", postCount)
+			logger.Printf("📊 Shutting down. Total events processed: %d", eventCount)
 			logger.Printf("👋 Program finished")
 			return
 
 		case err := <-firehoseClient.Errors():
 			logger.Printf("⚠️ Firehose error: %v", err)
 
-		case post, ok := <-firehoseClient.Posts():
+		case event, ok := <-firehoseClient.Events():
 			if !ok {
-				logger.Printf("📭 Post channel closed")
+				logger.Printf("📭 Event channel closed")
 				return
 			}
-
-			if err := proc.ProcessPost(post); err != nil {
-				logger.Printf("❌ Failed to process post: %v", err)
+			if err := proc.ProcessRawEvent(event); err != nil {
+				logger.Printf("❌ Failed to process event: %v", err)
 				continue
 			}
-
-			postCount++
-
-			if postCount%1000 == 0 {
-				logger.Printf("📊 Processed %d posts", postCount)
-			}
+			eventCount++
 		}
 	}
 }
@@ -102,9 +97,10 @@ func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, 
 
 			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Throughput=%.1f events/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
 				stats["total_actors"],
+				stats["total_labels"],
 				eventsPerSec,
 			)
 		}
