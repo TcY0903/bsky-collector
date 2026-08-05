@@ -41,9 +41,7 @@ func main() {
 	firehoseClient := stream.NewFirehoseClient(logger)
 	go func() {
 		logger.Printf("🔌 Starting Firehose client...")
-		if err := firehoseClient.Start(ctx); err != nil {
-			logger.Printf("❌ Firehose client error: %v", err)
-		}
+		firehoseClient.StartWithRetry(ctx)
 	}()
 
 	// Processor (only posts, actors, labels)

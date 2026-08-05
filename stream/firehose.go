@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"log/slog"
 
@@ -17,12 +18,14 @@ const FirehoseURL = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 
 // FirehoseClient manages the WebSocket connection to the Firehose.
 type FirehoseClient struct {
-	logger  *log.Logger
-	conn    *websocket.Conn
-	mu      sync.Mutex
-	running bool
-	eventCh chan *events.XRPCStreamEvent // Raw event channel
-	errorCh chan error
+	logger   *log.Logger
+	conn     *websocket.Conn
+	mu       sync.Mutex
+	running  bool
+	eventCh  chan *events.XRPCStreamEvent
+	errorCh  chan error
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewFirehoseClient creates a new Firehose client.
@@ -31,11 +34,74 @@ func NewFirehoseClient(logger *log.Logger) *FirehoseClient {
 		logger:  logger,
 		eventCh: make(chan *events.XRPCStreamEvent, 10000),
 		errorCh: make(chan error, 10),
+		stopCh:  make(chan struct{}),
 	}
 }
 
-// Start establishes the connection and begins processing the Firehose stream.
-func (c *FirehoseClient) Start(ctx context.Context) error {
+// StartWithRetry connects to Firehose with automatic reconnection.
+func (c *FirehoseClient) StartWithRetry(ctx context.Context) {
+	backoff := 1 * time.Second
+	maxBackoff := 60 * time.Second
+
+	for {
+		select {
+		case <-c.stopCh:
+			c.logger.Println("🛑 Firehose client stopped")
+			return
+		case <-ctx.Done():
+			c.logger.Println("🛑 Context cancelled, stopping Firehose client")
+			return
+		default:
+		}
+
+		c.logger.Println("🔌 Connecting to Firehose...")
+		err := c.startOnce(ctx)
+
+		// Check if we should exit before attempting reconnect
+		select {
+		case <-c.stopCh:
+			c.logger.Println("🛑 Firehose client stopped during reconnect")
+			return
+		case <-ctx.Done():
+			c.logger.Println("🛑 Context cancelled during reconnect")
+			return
+		default:
+		}
+
+		if err != nil {
+			c.logger.Printf("⚠️ Firehose connection lost: %v", err)
+			c.logger.Printf("🔄 Reconnecting in %v...", backoff)
+
+			select {
+			case <-time.After(backoff):
+				backoff = min(backoff*2, maxBackoff)
+			case <-c.stopCh:
+				c.logger.Println("🛑 Firehose client stopped during backoff")
+				return
+			case <-ctx.Done():
+				c.logger.Println("🛑 Context cancelled during backoff")
+				return
+			}
+		} else {
+			// Connection closed normally, reset backoff and retry
+			backoff = 1 * time.Second
+			c.logger.Println("🔄 Firehose connection ended, reconnecting...")
+
+			select {
+			case <-time.After(1 * time.Second):
+			case <-c.stopCh:
+				c.logger.Println("🛑 Firehose client stopped during reconnect delay")
+				return
+			case <-ctx.Done():
+				c.logger.Println("🛑 Context cancelled during reconnect delay")
+				return
+			}
+		}
+	}
+}
+
+// startOnce establishes a single Firehose connection.
+func (c *FirehoseClient) startOnce(ctx context.Context) error {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
@@ -107,13 +173,14 @@ func (c *FirehoseClient) Errors() <-chan error {
 }
 
 // Close shuts down the client gracefully.
-func (c *FirehoseClient) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil {
-		c.logger.Println("Closing Firehose connection...")
-		return c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	}
-	return nil
+func (c *FirehoseClient) Close() {
+	c.stopOnce.Do(func() {
+		close(c.stopCh)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.conn != nil {
+			c.logger.Println("Closing Firehose connection...")
+			c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		}
+	})
 }
