@@ -9,8 +9,8 @@ import (
 // SavePost inserts a single post into the database.
 func (db *DB) SavePost(post *models.Post) error {
 	query := `
-	INSERT INTO posts (uri, did, rkey, cid, text, created_at, received_at, reply_parent, reply_root)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	INSERT INTO posts (uri, did, rkey, cid, text, media, created_at, received_at, reply_parent, reply_root)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	ON CONFLICT (uri) DO NOTHING
 	`
 	_, err := db.conn.Exec(query,
@@ -19,6 +19,7 @@ func (db *DB) SavePost(post *models.Post) error {
 		post.RKey,
 		post.Cid,
 		post.Text,
+		post.Media,
 		post.CreatedAt,
 		post.ReceivedAt,
 		post.ReplyParent,
@@ -40,8 +41,8 @@ func (db *DB) SavePostsBatch(posts []*models.Post) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO posts (uri, did, rkey, cid, text, created_at, received_at, reply_parent, reply_root)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO posts (uri, did, rkey, cid, text, media, created_at, received_at, reply_parent, reply_root)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (uri) DO NOTHING
 	`)
 	if err != nil {
@@ -56,6 +57,7 @@ func (db *DB) SavePostsBatch(posts []*models.Post) error {
 			post.RKey,
 			post.Cid,
 			post.Text,
+			post.Media,
 			post.CreatedAt,
 			post.ReceivedAt,
 			post.ReplyParent,

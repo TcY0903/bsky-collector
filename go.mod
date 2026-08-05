@@ -8,9 +8,12 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
 	github.com/lib/pq v1.12.3
+	gorm.io/datatypes v1.2.7
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/ipfs/boxo v0.39.0 // indirect
 	github.com/ipld/go-ipld-prime v0.23.0 // indirect
 	github.com/multiformats/go-multicodec v0.10.0 // indirect
@@ -21,6 +24,8 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/text v0.36.0 // indirect
+	gorm.io/driver/mysql v1.5.6 // indirect
 )
 
 require (
@@ -38,7 +43,7 @@ require (
 	github.com/hashicorp/golang-lru v1.0.2 // indirect
 	github.com/ipfs/bbloom v0.1.0 // indirect
 	github.com/ipfs/go-block-format v0.2.3 // indirect
-	github.com/ipfs/go-cid v0.6.1 // indirect
+	github.com/ipfs/go-cid v0.6.1
 	github.com/ipfs/go-datastore v0.9.1 // indirect
 	github.com/ipfs/go-ipfs-blockstore v1.3.1 // indirect
 	github.com/ipfs/go-ipfs-ds-help v1.1.1 // indirect
@@ -78,6 +83,6 @@ require (
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gorm.io/gorm v1.25.9 // indirect
+	gorm.io/gorm v1.30.0 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )

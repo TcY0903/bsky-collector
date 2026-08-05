@@ -13,28 +13,32 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/ipld/go-car/v2"
 
+	"gorm.io/datatypes"
+
 	"bsky-collector/models"
 )
 
 // PostProcessor handles batch processing of post events.
 type PostProcessor struct {
-	p         *Processor
-	postBatch []*models.Post
-	batchMu   sync.Mutex
-	batchSize int
-	ticker    *time.Ticker
-	stopCh    chan struct{}
-	closeOnce sync.Once
+	p           *Processor
+	mediaParser *MediaParser
+	postBatch   []*models.Post
+	batchMu     sync.Mutex
+	batchSize   int
+	ticker      *time.Ticker
+	stopCh      chan struct{}
+	closeOnce   sync.Once
 }
 
 // NewPostProcessor creates a new PostProcessor.
 func NewPostProcessor(p *Processor) *PostProcessor {
 	pp := &PostProcessor{
-		p:         p,
-		postBatch: make([]*models.Post, 0, 500),
-		batchSize: 500,
-		ticker:    time.NewTicker(3 * time.Second),
-		stopCh:    make(chan struct{}),
+		p:           p,
+		mediaParser: NewMediaParser(p.logger),
+		postBatch:   make([]*models.Post, 0, 500),
+		batchSize:   500,
+		ticker:      time.NewTicker(3 * time.Second),
+		stopCh:      make(chan struct{}),
 	}
 	go pp.autoFlush()
 	return pp
@@ -169,6 +173,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			BlocksBase64 string `json:"blocks_base64"`
 		}
 		if err := json.Unmarshal(post.Payload, &commit); err != nil {
+			pp.p.logger.Printf("⚠️ Failed to unmarshal commit for post %s: %v", post.RKey, err)
 			continue
 		}
 		if commit.BlocksBase64 == "" {
@@ -176,6 +181,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 		}
 		blocksData, err := base64.StdEncoding.DecodeString(commit.BlocksBase64)
 		if err != nil {
+			pp.p.logger.Printf("⚠️ Failed to decode base64 blocks for post %s: %v", post.RKey, err)
 			continue
 		}
 		targetCID := post.Cid
@@ -184,10 +190,12 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 		}
 		blockReader, err := car.NewBlockReader(bytes.NewReader(blocksData))
 		if err != nil {
+			pp.p.logger.Printf("⚠️ Failed to create block reader for post %s: %v", post.RKey, err)
 			continue
 		}
 		var text, replyParent, replyRoot string
 		var createdAt time.Time
+
 		for {
 			block, err := blockReader.Next()
 			if err != nil {
@@ -198,6 +206,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			}
 			var record map[string]interface{}
 			if err := cbor.Unmarshal(block.RawData(), &record); err != nil {
+				pp.p.logger.Printf("⚠️ Failed to decode CBOR for post %s: %v", post.RKey, err)
 				break
 			}
 			if t, ok := record["text"].(string); ok {
@@ -208,6 +217,8 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 					createdAt = t
 				}
 			}
+
+			// Parse reply information
 			if replyVal, ok := record["reply"]; ok {
 				replyMap := make(map[string]interface{})
 				switch v := replyVal.(type) {
@@ -255,8 +266,18 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 					}
 				}
 			}
+
+			// Parse media (embed)
+			if embedVal, ok := record["embed"]; ok {
+				mediaData := pp.mediaParser.ParseEmbed(embedVal, post.DID)
+				if mediaData != nil {
+					post.Media = datatypes.JSON(mediaData)
+				}
+			}
+
 			break
 		}
+
 		post.Text = text
 		post.CreatedAt = createdAt
 		post.ReplyParent = replyParent

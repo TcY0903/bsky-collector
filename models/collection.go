@@ -2,6 +2,28 @@ package models
 
 import "time"
 
+// Like represents a like interaction on a post.
+type Like struct {
+	ID         uint   `gorm:"primaryKey"`
+	DID        string `gorm:"index"` // User who liked
+	SubjectURI string `gorm:"index"` // URI of the liked post
+	CreatedAt  time.Time
+	ReceivedAt time.Time `gorm:"index"`
+	RKey       string    `gorm:"index"`
+	URI        string    `gorm:"uniqueIndex"`
+}
+
+// Repost represents a repost interaction.
+type Repost struct {
+	ID         uint   `gorm:"primaryKey"`
+	DID        string `gorm:"index"` // User who reposted
+	SubjectURI string `gorm:"index"` // URI of the reposted post
+	CreatedAt  time.Time
+	ReceivedAt time.Time `gorm:"index"`
+	RKey       string    `gorm:"index"`
+	URI        string    `gorm:"uniqueIndex"`
+}
+
 // Follow represents a follow relationship between two Bluesky users.
 type Follow struct {
 	ID         uint      `gorm:"primaryKey"`

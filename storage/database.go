@@ -45,6 +45,7 @@ func (db *DB) initSchema() error {
 			rkey TEXT NOT NULL,
 			cid TEXT,
 			text TEXT,
+			media JSONB,
 			created_at TIMESTAMP,
 			received_at TIMESTAMP NOT NULL,
 			reply_parent TEXT,
