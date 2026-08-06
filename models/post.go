@@ -15,10 +15,12 @@ type Post struct {
 	Cid         string         `gorm:"index"`       // Content Identifier (CID) for integrity verification
 	Text        string         // Post content
 	Media       datatypes.JSON `gorm:"type:jsonb"` // Media metadata in JSON format
-	CreatedAt   time.Time      `gorm:"index"`      // Post creation time (from Bluesky)
-	ReceivedAt  time.Time      `gorm:"index"`      // Time our system received the post
 	ReplyParent string         `gorm:"index"`      // URI of the parent post (if this is a reply)
 	ReplyRoot   string         `gorm:"index"`      // URI of the root post of the thread (if this is a reply)
+	CreatedAt   time.Time      `gorm:"index"`      // Post creation time (from Bluesky)
+	ReceivedAt  time.Time      `gorm:"index"`      // Time our system received the post
+	Status      string         `gorm:"index"`      // "active", "updated" or "deleted"
+	NeedActor   bool           `gorm:"-"`          // Indicates if actor info needs to be fetched
 	Payload     []byte         `gorm:"-"`          // Temporary storage for CAR data, not saved to DB
 }
 
@@ -56,4 +58,19 @@ type ExternalInfo struct {
 type RecordRef struct {
 	URI string `json:"uri"`
 	CID string `json:"cid"`
+}
+
+// PostHistory represents a historical version of a post (after update or delete).
+type PostHistory struct {
+	ID          uint           `gorm:"primaryKey"`
+	PostURI     string         `gorm:"index"` // Full AT-URI
+	CID         string         `gorm:"index"` // Content Identifier
+	Text        string         // Post content at the time of archiving
+	Media       datatypes.JSON `gorm:"type:jsonb"` // Media metadata
+	ReplyParent string         // URI of the parent post
+	ReplyRoot   string         // URI of the root post
+	CreatedAt   time.Time      `gorm:"index"` // Post creation time (from Bluesky)
+	ReceivedAt  time.Time      `gorm:"index"` // When this version was received (valid_from)
+	ValidTo     time.Time      `gorm:"index"` // When this version became invalid (was replaced or deleted)
+	Status      string         // "updated" or "deleted"
 }

@@ -95,10 +95,11 @@ func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, 
 
 			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, Throughput=%.1f events/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, History=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
 				stats["total_actors"],
 				stats["total_labels"],
+				stats["total_history"],
 				eventsPerSec,
 			)
 		}

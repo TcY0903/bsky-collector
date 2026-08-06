@@ -78,8 +78,8 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 			continue
 		}
 
-		// Only process post creation events
-		if op.Action == "create" && strings.HasPrefix(op.Path, "app.bsky.feed.post/") {
+		// Only process post events
+		if strings.HasPrefix(op.Path, "app.bsky.feed.post/") {
 			if err := p.postProcessor.ProcessPost(commit, op); err != nil {
 				p.logger.Printf("⚠️ Failed to handle post: %v", err)
 			}

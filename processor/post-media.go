@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/ipfs/go-cid"
@@ -20,23 +19,6 @@ type MediaParser struct {
 // NewMediaParser creates a new MediaParser
 func NewMediaParser(logger *log.Logger) *MediaParser {
 	return &MediaParser{logger: logger}
-}
-
-// sanitizeText removes NULL bytes and control characters from text
-func sanitizeText(text string) string {
-	if text == "" {
-		return ""
-	}
-	text = strings.ReplaceAll(text, "\x00", "")
-	var builder strings.Builder
-	for _, r := range text {
-		if r == '\n' || r == '\t' || r == '\r' {
-			builder.WriteRune(r)
-		} else if r >= 32 {
-			builder.WriteRune(r)
-		}
-	}
-	return builder.String()
 }
 
 // ParseEmbed extracts media metadata from the embed field

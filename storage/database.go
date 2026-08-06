@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	_ "github.com/lib/pq"
 )
@@ -19,6 +20,11 @@ func NewDB(connStr string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Configure connection pool
+	conn.SetMaxOpenConns(25)
+	conn.SetMaxIdleConns(10)
+	conn.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
@@ -46,10 +52,11 @@ func (db *DB) initSchema() error {
 			cid TEXT,
 			text TEXT,
 			media JSONB,
+			reply_parent TEXT,
+			reply_root TEXT,
 			created_at TIMESTAMP,
 			received_at TIMESTAMP NOT NULL,
-			reply_parent TEXT,
-			reply_root TEXT
+			status TEXT DEFAULT 'active'
 		);
 		CREATE INDEX IF NOT EXISTS idx_posts_uri ON posts(uri);
 		CREATE INDEX IF NOT EXISTS idx_posts_did ON posts(did);
@@ -57,8 +64,7 @@ func (db *DB) initSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_posts_cid ON posts(cid);
 		CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);
 		CREATE INDEX IF NOT EXISTS idx_posts_received_at ON posts(received_at);
-		CREATE INDEX IF NOT EXISTS idx_posts_reply_parent ON posts(reply_parent);
-		CREATE INDEX IF NOT EXISTS idx_posts_reply_root ON posts(reply_root);
+		CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
 		`,
 
 		// Actors table
@@ -98,6 +104,29 @@ func (db *DB) initSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_labels_val ON labels(val);
 		CREATE INDEX IF NOT EXISTS idx_labels_received_at ON labels(received_at);
 		`,
+
+		// Post history table
+		`
+		CREATE TABLE IF NOT EXISTS post_history (
+			id BIGSERIAL PRIMARY KEY,
+			post_uri TEXT NOT NULL,
+			cid TEXT NOT NULL,
+			text TEXT,
+			media JSONB,
+			reply_parent TEXT,
+			reply_root TEXT,
+			created_at TIMESTAMP,
+			received_at TIMESTAMP NOT NULL,
+			valid_to TIMESTAMP NOT NULL,
+			status TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_post_history_uri ON post_history(post_uri);
+		CREATE INDEX IF NOT EXISTS idx_post_history_cid ON post_history(cid);
+		CREATE INDEX IF NOT EXISTS idx_post_history_created_at ON post_history(created_at);
+		CREATE INDEX IF NOT EXISTS idx_post_history_received_at ON post_history(received_at);
+		CREATE INDEX IF NOT EXISTS idx_post_history_valid_to ON post_history(valid_to);
+		CREATE INDEX IF NOT EXISTS idx_post_history_status ON post_history(status);
+		`,
 	}
 
 	for _, q := range queries {
@@ -113,9 +142,10 @@ func (db *DB) initSchema() error {
 func (db *DB) GetStats() (map[string]int64, error) {
 	stats := make(map[string]int64)
 	queries := map[string]string{
-		"total_posts":  "SELECT COUNT(*) FROM posts;",
-		"total_actors": "SELECT COUNT(*) FROM actors;",
-		"total_labels": "SELECT COUNT(*) FROM labels;",
+		"total_posts":   "SELECT COUNT(*) FROM posts;",
+		"total_actors":  "SELECT COUNT(*) FROM actors;",
+		"total_labels":  "SELECT COUNT(*) FROM labels;",
+		"total_history": "SELECT COUNT(*) FROM post_history;",
 	}
 	for key, query := range queries {
 		var count int64
