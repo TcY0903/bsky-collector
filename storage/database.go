@@ -54,8 +54,8 @@ func (db *DB) initSchema() error {
 			media JSONB,
 			reply_parent TEXT,
 			reply_root TEXT,
-			created_at TIMESTAMP,
-			received_at TIMESTAMP NOT NULL,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
 			status TEXT DEFAULT 'active'
 		);
 		CREATE INDEX IF NOT EXISTS idx_posts_uri ON posts(uri);
@@ -79,9 +79,9 @@ func (db *DB) initSchema() error {
 			followers_count INTEGER DEFAULT 0,
 			follows_count INTEGER DEFAULT 0,
 			posts_count INTEGER DEFAULT 0,
-			status TEXT DEFAULT 'active',
-			received_at TIMESTAMP NOT NULL,
-			created_at TEXT
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			status TEXT DEFAULT 'active'
 		);
 		CREATE INDEX IF NOT EXISTS idx_actors_handle ON actors(handle);
 		CREATE INDEX IF NOT EXISTS idx_actors_status ON actors(status);
@@ -96,8 +96,8 @@ func (db *DB) initSchema() error {
 			cid TEXT,
 			val TEXT NOT NULL,
 			neg BOOLEAN DEFAULT FALSE,
-			cts TIMESTAMP,
-			received_at TIMESTAMP NOT NULL
+			cts TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_labels_src ON labels(src);
 		CREATE INDEX IF NOT EXISTS idx_labels_uri ON labels(uri);
@@ -115,9 +115,9 @@ func (db *DB) initSchema() error {
 			media JSONB,
 			reply_parent TEXT,
 			reply_root TEXT,
-			created_at TIMESTAMP,
-			received_at TIMESTAMP NOT NULL,
-			valid_to TIMESTAMP NOT NULL,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			valid_to TIMESTAMPTZ NOT NULL,
 			status TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_post_history_uri ON post_history(post_uri);

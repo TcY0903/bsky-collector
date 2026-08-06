@@ -154,7 +154,18 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 	}
 
 	var result struct {
-		Profiles []models.Actor `json:"profiles"`
+		Profiles []struct {
+			DID            string `json:"did"`
+			Handle         string `json:"handle"`
+			DisplayName    string `json:"displayName"`
+			Description    string `json:"description"`
+			Avatar         string `json:"avatar"`
+			Banner         string `json:"banner"`
+			FollowersCount int    `json:"followersCount"`
+			FollowsCount   int    `json:"followsCount"`
+			PostsCount     int    `json:"postsCount"`
+			CreatedAt      string `json:"createdAt"`
+		} `json:"profiles"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		af.p.logger.Printf("⚠️ Failed to decode actor response: %v", err)
@@ -163,11 +174,30 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 
 	actors := make([]*models.Actor, 0, len(result.Profiles))
 	for i := range result.Profiles {
-		actor := &result.Profiles[i]
+		p := &result.Profiles[i]
+		actor := &models.Actor{
+			DID:            p.DID,
+			Handle:         p.Handle,
+			DisplayName:    p.DisplayName,
+			Description:    p.Description,
+			Avatar:         p.Avatar,
+			Banner:         p.Banner,
+			FollowersCount: p.FollowersCount,
+			FollowsCount:   p.FollowsCount,
+			PostsCount:     p.PostsCount,
+			ReceivedAt:     time.Now().UTC(),
+		}
+
+		// Parse created_at
+		if p.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, p.CreatedAt); err == nil {
+				actor.CreatedAt = t.UTC()
+			}
+		}
+
 		if actor.Status == "" {
 			actor.Status = "active"
 		}
-		actor.ReceivedAt = time.Now()
 		actors = append(actors, actor)
 	}
 

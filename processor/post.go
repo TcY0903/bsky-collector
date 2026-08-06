@@ -145,10 +145,10 @@ func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit,
 		Media:       existingPost.Media,
 		ReplyParent: existingPost.ReplyParent,
 		ReplyRoot:   existingPost.ReplyRoot,
-		CreatedAt:   existingPost.CreatedAt,
-		ReceivedAt:  existingPost.ReceivedAt,
+		CreatedAt:   existingPost.CreatedAt.UTC(),
+		ReceivedAt:  existingPost.ReceivedAt.UTC(),
 		Status:      "updated",
-		ValidTo:     time.Now(),
+		ValidTo:     time.Now().UTC(),
 	}
 
 	if err := pp.p.db.SavePostHistory(history); err != nil {
@@ -193,10 +193,10 @@ func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit,
 		Media:       existingPost.Media,
 		ReplyParent: existingPost.ReplyParent,
 		ReplyRoot:   existingPost.ReplyRoot,
-		CreatedAt:   existingPost.CreatedAt,
-		ReceivedAt:  existingPost.ReceivedAt,
+		CreatedAt:   existingPost.CreatedAt.UTC(),
+		ReceivedAt:  existingPost.ReceivedAt.UTC(),
 		Status:      "deleted",
-		ValidTo:     time.Now(),
+		ValidTo:     time.Now().UTC(),
 	}
 
 	if err := pp.p.db.SavePostHistory(history); err != nil {
@@ -206,7 +206,7 @@ func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit,
 	// Add to delete batch
 	pp.batchMu.Lock()
 	pp.deleteBatch = append(pp.deleteBatch, uri)
-	if len(pp.deleteBatch) >= pp.batchSize/5 { // Delete batch size: 100
+	if len(pp.deleteBatch) >= pp.batchSize/5 {
 		batch := pp.deleteBatch
 		pp.deleteBatch = make([]string, 0, pp.batchSize/5)
 		pp.batchMu.Unlock()
@@ -236,7 +236,7 @@ func (pp *PostProcessor) buildPost(commit *atproto.SyncSubscribeRepos_Commit, op
 		DID:        commit.Repo,
 		RKey:       rkey,
 		Cid:        cidStr,
-		ReceivedAt: time.Now(),
+		ReceivedAt: time.Now().UTC(),
 		NeedActor:  false,
 	}
 
@@ -356,7 +356,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			}
 			if c, ok := record["createdAt"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, c); err == nil {
-					createdAt = t
+					createdAt = t.UTC()
 				}
 			}
 
@@ -418,7 +418,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 		}
 
 		post.Text = text
-		post.CreatedAt = createdAt
+		post.CreatedAt = createdAt.UTC()
 		post.ReplyParent = replyParent
 		post.ReplyRoot = replyRoot
 		if mediaData != nil {

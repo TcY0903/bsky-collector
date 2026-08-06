@@ -193,7 +193,7 @@ func (lf *LabelFetcher) fetchGroup(uris []string) {
 	for _, l := range result.Labels {
 		cts, err := time.Parse(time.RFC3339, l.CTS)
 		if err != nil {
-			cts = time.Now()
+			cts = time.Now().UTC()
 		}
 		labels = append(labels, &models.Label{
 			Src:        l.Src,
@@ -201,8 +201,8 @@ func (lf *LabelFetcher) fetchGroup(uris []string) {
 			CID:        l.CID,
 			Val:        l.Val,
 			Neg:        l.Neg,
-			CTS:        cts,
-			ReceivedAt: time.Now(),
+			CTS:        cts.UTC(),
+			ReceivedAt: time.Now().UTC(),
 		})
 	}
 

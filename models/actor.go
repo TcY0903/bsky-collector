@@ -13,7 +13,7 @@ type Actor struct {
 	FollowersCount int       `json:"followersCount"` // Number of followers
 	FollowsCount   int       `json:"followsCount"`   // Number of accounts followed
 	PostsCount     int       `json:"postsCount"`     // Number of posts
-	Status         string    `json:"-" gorm:"index"` // "active", "deactivated", "suspended", ...
+	CreatedAt      time.Time `json:"createdAt"`      // Account creation timestamp (from Bluesky)
 	ReceivedAt     time.Time `json:"-"`              // Last time this record was updated
-	CreatedAt      string    `json:"createdAt"`      // Account creation timestamp (from Bluesky)
+	Status         string    `json:"-" gorm:"index"` // "active", "deactivated", "suspended", ...
 }
