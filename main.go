@@ -37,14 +37,14 @@ func main() {
 		cancel()
 	}()
 
-	// Firehose client (fixed URL)
+	// Firehose client
 	firehoseClient := stream.NewFirehoseClient(logger)
 	go func() {
 		logger.Printf("🔌 Starting Firehose client...")
 		firehoseClient.StartWithRetry(ctx)
 	}()
 
-	// Processor (only posts, actors, labels)
+	// Processor
 	proc := processor.NewProcessor(cfg, db, logger)
 	proc.SetContext(ctx)
 	defer proc.Close()
@@ -95,11 +95,12 @@ func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, 
 
 			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, History=%d, Throughput=%.1f events/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, History=%d, Blocks=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
 				stats["total_actors"],
 				stats["total_labels"],
 				stats["total_history"],
+				stats["total_blocks"],
 				eventsPerSec,
 			)
 		}

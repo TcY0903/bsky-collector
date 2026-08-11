@@ -38,10 +38,12 @@ type Follow struct {
 // Block represents a block relationship between two Bluesky users.
 type Block struct {
 	ID         uint      `gorm:"primaryKey"`
+	URI        string    `gorm:"uniqueIndex"` // at://did/app.bsky.graph.block/rkey
 	DID        string    `gorm:"index"`       // The user who performed the block
 	SubjectDID string    `gorm:"index"`       // The user who was blocked
 	RKey       string    `gorm:"index"`       // Record key
-	URI        string    `gorm:"uniqueIndex"` // AT-URI: at://did/collection/rkey
-	CreatedAt  time.Time // When the block was created (from the record)
+	CID        string    `gorm:"index"`       // Content Identifier
+	CreatedAt  time.Time // When the block was created (from Bluesky record)
 	ReceivedAt time.Time `gorm:"index"` // When our system received the event
+	Status     string    `gorm:"index"` // "active" or "deleted"
 }

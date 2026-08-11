@@ -23,6 +23,9 @@ type Processor struct {
 	// Post processor
 	postProcessor *PostProcessor
 
+	// Block processor
+	blockProcessor *BlockProcessor
+
 	// Fetchers
 	actorFetcher *ActorFetcher
 	labelFetcher *LabelFetcher
@@ -46,6 +49,9 @@ func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Proce
 
 	// Initialize post processor
 	p.postProcessor = NewPostProcessor(p)
+
+	// Initialize block processor
+	p.blockProcessor = NewBlockProcessor(p)
 
 	// Initialize fetchers
 	p.actorFetcher = NewActorFetcher(p)
@@ -78,11 +84,20 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 			continue
 		}
 
-		// Only process post events
+		// Process post events
 		if strings.HasPrefix(op.Path, "app.bsky.feed.post/") {
 			if err := p.postProcessor.ProcessPost(commit, op); err != nil {
 				p.logger.Printf("⚠️ Failed to handle post: %v", err)
 			}
+			continue
+		}
+
+		// Process block events
+		if strings.HasPrefix(op.Path, "app.bsky.graph.block/") {
+			if err := p.blockProcessor.ProcessBlock(commit, op); err != nil {
+				p.logger.Printf("⚠️ Failed to handle block: %v", err)
+			}
+			continue
 		}
 	}
 
@@ -95,6 +110,9 @@ func (p *Processor) Close() {
 
 	if p.postProcessor != nil {
 		p.postProcessor.Close()
+	}
+	if p.blockProcessor != nil {
+		p.blockProcessor.Close()
 	}
 	if p.actorFetcher != nil {
 		p.actorFetcher.Stop()

@@ -127,6 +127,29 @@ func (db *DB) initSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_post_history_valid_to ON post_history(valid_to);
 		CREATE INDEX IF NOT EXISTS idx_post_history_status ON post_history(status);
 		`,
+
+		// Blocks table
+		`
+		CREATE TABLE IF NOT EXISTS blocks (
+			id BIGSERIAL PRIMARY KEY,
+			uri TEXT UNIQUE NOT NULL,
+			did TEXT NOT NULL,
+			subject_did TEXT NOT NULL,
+			rkey TEXT NOT NULL,
+			cid TEXT,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			status TEXT DEFAULT 'active'
+		);
+		CREATE INDEX IF NOT EXISTS idx_blocks_uri ON blocks(uri);
+		CREATE INDEX IF NOT EXISTS idx_blocks_did ON blocks(did);
+		CREATE INDEX IF NOT EXISTS idx_blocks_subject_did ON blocks(subject_did);
+		CREATE INDEX IF NOT EXISTS idx_blocks_rkey ON blocks(rkey);
+		CREATE INDEX IF NOT EXISTS idx_blocks_cid ON blocks(cid);
+		CREATE INDEX IF NOT EXISTS idx_blocks_created_at ON blocks(created_at);
+		CREATE INDEX IF NOT EXISTS idx_blocks_received_at ON blocks(received_at);
+		CREATE INDEX IF NOT EXISTS idx_blocks_status ON blocks(status);
+		`,
 	}
 
 	for _, q := range queries {
@@ -146,6 +169,7 @@ func (db *DB) GetStats() (map[string]int64, error) {
 		"total_actors":  "SELECT COUNT(*) FROM actors;",
 		"total_labels":  "SELECT COUNT(*) FROM labels;",
 		"total_history": "SELECT COUNT(*) FROM post_history;",
+		"total_blocks":  "SELECT COUNT(*) FROM blocks;",
 	}
 	for key, query := range queries {
 		var count int64
