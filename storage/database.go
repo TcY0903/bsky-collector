@@ -150,6 +150,80 @@ func (db *DB) initSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_blocks_received_at ON blocks(received_at);
 		CREATE INDEX IF NOT EXISTS idx_blocks_status ON blocks(status);
 		`,
+
+		// Lists table
+		`
+		CREATE TABLE IF NOT EXISTS lists (
+			id BIGSERIAL PRIMARY KEY,
+			uri TEXT UNIQUE NOT NULL,
+			did TEXT NOT NULL,
+			rkey TEXT NOT NULL,
+			cid TEXT,
+			name TEXT NOT NULL,
+			purpose TEXT NOT NULL,
+			description TEXT,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			status TEXT DEFAULT 'active'
+		);
+		CREATE INDEX IF NOT EXISTS idx_lists_uri ON lists(uri);
+		CREATE INDEX IF NOT EXISTS idx_lists_did ON lists(did);
+		CREATE INDEX IF NOT EXISTS idx_lists_rkey ON lists(rkey);
+		CREATE INDEX IF NOT EXISTS idx_lists_cid ON lists(cid);
+		CREATE INDEX IF NOT EXISTS idx_lists_name ON lists(name);
+		CREATE INDEX IF NOT EXISTS idx_lists_purpose ON lists(purpose);
+		CREATE INDEX IF NOT EXISTS idx_lists_created_at ON lists(created_at);
+		CREATE INDEX IF NOT EXISTS idx_lists_received_at ON lists(received_at);
+		CREATE INDEX IF NOT EXISTS idx_lists_status ON lists(status);
+		`,
+
+		// List items table
+		`
+		CREATE TABLE IF NOT EXISTS list_items (
+			id BIGSERIAL PRIMARY KEY,
+			uri TEXT UNIQUE NOT NULL,
+			list_uri TEXT NOT NULL,
+			did TEXT NOT NULL,
+			subject_did TEXT NOT NULL,
+			rkey TEXT NOT NULL,
+			cid TEXT,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			status TEXT DEFAULT 'active'
+		);
+		CREATE INDEX IF NOT EXISTS idx_list_items_uri ON list_items(uri);
+		CREATE INDEX IF NOT EXISTS idx_list_items_list_uri ON list_items(list_uri);
+		CREATE INDEX IF NOT EXISTS idx_list_items_did ON list_items(did);
+		CREATE INDEX IF NOT EXISTS idx_list_items_subject_did ON list_items(subject_did);
+		CREATE INDEX IF NOT EXISTS idx_list_items_rkey ON list_items(rkey);
+		CREATE INDEX IF NOT EXISTS idx_list_items_cid ON list_items(cid);
+		CREATE INDEX IF NOT EXISTS idx_list_items_created_at ON list_items(created_at);
+		CREATE INDEX IF NOT EXISTS idx_list_items_received_at ON list_items(received_at);
+		CREATE INDEX IF NOT EXISTS idx_list_items_status ON list_items(status);
+		`,
+
+		// List blocks table
+		`
+		CREATE TABLE IF NOT EXISTS list_blocks (
+			id BIGSERIAL PRIMARY KEY,
+			uri TEXT UNIQUE NOT NULL,
+			did TEXT NOT NULL,
+			subject_list TEXT NOT NULL,
+			rkey TEXT NOT NULL,
+			cid TEXT,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			status TEXT DEFAULT 'active'
+		);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_uri ON list_blocks(uri);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_did ON list_blocks(did);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_subject_list ON list_blocks(subject_list);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_rkey ON list_blocks(rkey);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_cid ON list_blocks(cid);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_created_at ON list_blocks(created_at);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_received_at ON list_blocks(received_at);
+		CREATE INDEX IF NOT EXISTS idx_list_blocks_status ON list_blocks(status);
+		`,
 	}
 
 	for _, q := range queries {
@@ -165,11 +239,14 @@ func (db *DB) initSchema() error {
 func (db *DB) GetStats() (map[string]int64, error) {
 	stats := make(map[string]int64)
 	queries := map[string]string{
-		"total_posts":   "SELECT COUNT(*) FROM posts;",
-		"total_actors":  "SELECT COUNT(*) FROM actors;",
-		"total_labels":  "SELECT COUNT(*) FROM labels;",
-		"total_history": "SELECT COUNT(*) FROM post_history;",
-		"total_blocks":  "SELECT COUNT(*) FROM blocks;",
+		"total_posts":       "SELECT COUNT(*) FROM posts;",
+		"total_actors":      "SELECT COUNT(*) FROM actors;",
+		"total_labels":      "SELECT COUNT(*) FROM labels;",
+		"total_history":     "SELECT COUNT(*) FROM post_history;",
+		"total_blocks":      "SELECT COUNT(*) FROM blocks;",
+		"total_lists":       "SELECT COUNT(*) FROM lists;",
+		"total_list_items":  "SELECT COUNT(*) FROM list_items;",
+		"total_list_blocks": "SELECT COUNT(*) FROM list_blocks;",
 	}
 	for key, query := range queries {
 		var count int64

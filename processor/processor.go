@@ -26,9 +26,13 @@ type Processor struct {
 	// Block processor
 	blockProcessor *BlockProcessor
 
+	// List processor
+	listProcessor *ListProcessor
+
 	// Fetchers
 	actorFetcher *ActorFetcher
 	labelFetcher *LabelFetcher
+	listFetcher  *ListFetcher
 
 	// Throughput statistics
 	statsMu      sync.RWMutex
@@ -53,12 +57,18 @@ func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Proce
 	// Initialize block processor
 	p.blockProcessor = NewBlockProcessor(p)
 
+	// Initialize list processor
+	p.listProcessor = NewListProcessor(p)
+
 	// Initialize fetchers
 	p.actorFetcher = NewActorFetcher(p)
 	p.actorFetcher.Start()
 
 	p.labelFetcher = NewLabelFetcher(p)
 	p.labelFetcher.Start()
+
+	p.listFetcher = NewListFetcher(p)
+	p.listFetcher.Start()
 
 	go p.calculateThroughput()
 
@@ -99,6 +109,16 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 			}
 			continue
 		}
+
+		// Process list events (list, listitem, listblock)
+		if strings.HasPrefix(op.Path, "app.bsky.graph.list/") ||
+			strings.HasPrefix(op.Path, "app.bsky.graph.listitem/") ||
+			strings.HasPrefix(op.Path, "app.bsky.graph.listblock/") {
+			if err := p.listProcessor.ProcessListEvent(commit, op); err != nil {
+				p.logger.Printf("⚠️ Failed to handle list event: %v", err)
+			}
+			continue
+		}
 	}
 
 	return nil
@@ -114,11 +134,17 @@ func (p *Processor) Close() {
 	if p.blockProcessor != nil {
 		p.blockProcessor.Close()
 	}
+	if p.listProcessor != nil {
+		p.listProcessor.Close()
+	}
 	if p.actorFetcher != nil {
 		p.actorFetcher.Stop()
 	}
 	if p.labelFetcher != nil {
 		p.labelFetcher.Stop()
+	}
+	if p.listFetcher != nil {
+		p.listFetcher.Stop()
 	}
 
 	p.logger.Println("✅ Processor closed")
