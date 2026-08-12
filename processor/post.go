@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/fxamacker/cbor/v2"
@@ -268,34 +267,6 @@ func (pp *PostProcessor) buildPost(commit *atproto.SyncSubscribeRepos_Commit, op
 	}
 
 	return post, nil
-}
-
-// sanitizeText removes NULL bytes, invalid UTF-8 sequences and control characters
-func sanitizeText(text string) string {
-	if text == "" {
-		return ""
-	}
-
-	// Remove NULL bytes
-	text = strings.ReplaceAll(text, "\x00", "")
-
-	// Ensure valid UTF-8
-	if !utf8.ValidString(text) {
-		text = strings.ToValidUTF8(text, "�")
-	}
-
-	// Remove control characters except newline, tab, carriage return
-	var builder strings.Builder
-	for _, r := range text {
-		if r == '\n' || r == '\t' || r == '\r' {
-			builder.WriteRune(r)
-		} else if r >= 32 {
-			builder.WriteRune(r)
-		}
-	}
-	text = builder.String()
-
-	return strings.TrimSpace(text)
 }
 
 // enrichPosts parses CAR files and extracts post content.

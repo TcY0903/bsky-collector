@@ -29,10 +29,11 @@ type ActorFetcher struct {
 	client    *http.Client
 }
 
+// NewActorFetcher creates a new ActorFetcher.
 func NewActorFetcher(p *Processor) *ActorFetcher {
 	af := &ActorFetcher{
 		p:         p,
-		queue:     make(chan string, 2000),
+		queue:     make(chan string, 5000),
 		stopCh:    make(chan struct{}),
 		batchSize: 25,
 		ticker:    time.NewTicker(3 * time.Second),
@@ -43,6 +44,7 @@ func NewActorFetcher(p *Processor) *ActorFetcher {
 	return af
 }
 
+// Start starts the ActorFetcher worker.
 func (af *ActorFetcher) Start() {
 	af.mu.Lock()
 	defer af.mu.Unlock()
@@ -54,6 +56,7 @@ func (af *ActorFetcher) Start() {
 	go af.worker()
 }
 
+// Stop stops the ActorFetcher worker.
 func (af *ActorFetcher) Stop() {
 	af.mu.Lock()
 	defer af.mu.Unlock()
@@ -66,10 +69,18 @@ func (af *ActorFetcher) Stop() {
 	af.wg.Wait()
 }
 
+// QueueDID adds a DID to the fetch queue (with database existence check).
 func (af *ActorFetcher) QueueDID(did string) {
 	if did == "" || !didRegexp.MatchString(did) {
 		return
 	}
+
+	// Check if actor already exists in DB
+	exists, _ := af.p.db.ActorExists(did)
+	if exists {
+		return
+	}
+
 	select {
 	case af.queue <- did:
 	default:
@@ -77,7 +88,7 @@ func (af *ActorFetcher) QueueDID(did string) {
 	}
 }
 
-// QueueActorsForPosts extracts DIDs from posts and queues them for fetching.
+// QueueActorsForPosts extracts DIDs from posts and queues them.
 func (af *ActorFetcher) QueueActorsForPosts(posts []*models.Post) {
 	for _, post := range posts {
 		if post.DID != "" {
@@ -95,16 +106,16 @@ func (af *ActorFetcher) worker() {
 	for {
 		select {
 		case <-af.stopCh:
-			if len(batch) > 0 {
-				af.fetchBatch(batch)
-			}
+			// 关闭时直接退出，不处理剩余 batch
 			return
+
 		case did := <-af.queue:
 			batch = append(batch, did)
 			if len(batch) >= af.batchSize {
 				af.fetchBatch(batch)
 				batch = make([]string, 0, af.batchSize)
 			}
+
 		case <-ticker.C:
 			if len(batch) > 0 {
 				af.fetchBatch(batch)
@@ -177,9 +188,9 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 		p := &result.Profiles[i]
 		actor := &models.Actor{
 			DID:            p.DID,
-			Handle:         p.Handle,
-			DisplayName:    p.DisplayName,
-			Description:    p.Description,
+			Handle:         sanitizeText(p.Handle),
+			DisplayName:    sanitizeText(p.DisplayName),
+			Description:    sanitizeText(p.Description),
 			Avatar:         p.Avatar,
 			Banner:         p.Banner,
 			FollowersCount: p.FollowersCount,
@@ -187,14 +198,11 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 			PostsCount:     p.PostsCount,
 			ReceivedAt:     time.Now().UTC(),
 		}
-
-		// Parse created_at
 		if p.CreatedAt != "" {
 			if t, err := time.Parse(time.RFC3339, p.CreatedAt); err == nil {
 				actor.CreatedAt = t.UTC()
 			}
 		}
-
 		if actor.Status == "" {
 			actor.Status = "active"
 		}

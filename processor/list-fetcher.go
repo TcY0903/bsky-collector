@@ -16,7 +16,7 @@ import (
 // ListFetcher handles fetching list information via the API.
 type ListFetcher struct {
 	p         *Processor
-	queue     chan string // list URIs to fetch
+	queue     chan string
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
 	started   bool
@@ -177,15 +177,15 @@ func (lf *ListFetcher) fetchList(listURI string) {
 		return
 	}
 
-	// Save the list
+	// Save the list with sanitized text fields
 	list := &models.List{
 		URI:         result.List.URI,
 		DID:         result.List.Creator.DID,
 		RKey:        rkey,
 		CID:         result.List.CID,
-		Name:        result.List.Name,
+		Name:        sanitizeText(result.List.Name),
 		Purpose:     result.List.Purpose,
-		Description: result.List.Description,
+		Description: sanitizeText(result.List.Description),
 		ReceivedAt:  time.Now().UTC(),
 		Status:      "active",
 	}
@@ -198,8 +198,7 @@ func (lf *ListFetcher) fetchList(listURI string) {
 		lf.p.logger.Printf("⚠️ Failed to save list %s: %v", list.URI, err)
 		return
 	}
-	lf.p.logger.Printf("📋 Fetched list via API: %s (creator: %s, members: %d)",
-		list.Name, list.DID, len(result.Items))
+	// lf.p.logger.Printf("📋 Fetched list via API: %s (creator: %s, members: %d)", list.Name, list.DID, len(result.Items))
 
 	// Queue the creator for actor fetching
 	if lf.p.actorFetcher != nil {
@@ -224,7 +223,7 @@ func (lf *ListFetcher) fetchList(listURI string) {
 			listItem := &models.ListItem{
 				URI:        item.URI,
 				ListURI:    list.URI,
-				DID:        list.DID, // creator of the list
+				DID:        list.DID,
 				SubjectDID: item.Subject.DID,
 				RKey:       itemRkey,
 				ReceivedAt: time.Now().UTC(),
@@ -247,7 +246,7 @@ func (lf *ListFetcher) fetchList(listURI string) {
 			if err := lf.p.db.SaveListItemsBatch(listItems); err != nil {
 				lf.p.logger.Printf("⚠️ Failed to save %d list items for %s: %v", len(listItems), list.URI, err)
 			} else {
-				lf.p.logger.Printf("👥 Saved %d list items for list: %s", len(listItems), list.Name)
+				// lf.p.logger.Printf("👥 Saved %d list items for list: %s", len(listItems), list.Name)
 			}
 		}
 	}
