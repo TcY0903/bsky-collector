@@ -14,7 +14,7 @@ import (
 	"bsky-collector/storage"
 )
 
-// Processor orchestrates the processing of Firehose events.
+// Processor orchestrates the processing of Firehose events and label stream events.
 type Processor struct {
 	cfg    *config.Config
 	db     *storage.DB
@@ -30,9 +30,11 @@ type Processor struct {
 	// List processor
 	listProcessor *ListProcessor
 
+	// Label processor (from Labeler Relay)
+	labelProcessor *LabelProcessor
+
 	// Fetchers
 	actorFetcher *ActorFetcher
-	labelFetcher *LabelFetcher
 	listFetcher  *ListFetcher
 
 	// Throughput statistics
@@ -61,12 +63,12 @@ func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Proce
 	// Initialize list processor
 	p.listProcessor = NewListProcessor(p)
 
+	// Initialize label processor
+	p.labelProcessor = NewLabelProcessor(p)
+
 	// Initialize fetchers
 	p.actorFetcher = NewActorFetcher(p)
 	p.actorFetcher.Start()
-
-	p.labelFetcher = NewLabelFetcher(p)
-	p.labelFetcher.Start()
 
 	p.listFetcher = NewListFetcher(p)
 	p.listFetcher.Start()
@@ -125,6 +127,11 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 	return nil
 }
 
+// ProcessLabelMessage processes a raw message from Labeler Relay.
+func (p *Processor) ProcessLabelMessage(message []byte) error {
+	return p.labelProcessor.ProcessLabelMessage(message)
+}
+
 // Close gracefully shuts down the processor.
 func (p *Processor) Close() {
 	p.logger.Println("🛑 Processor shutting down...")
@@ -138,11 +145,11 @@ func (p *Processor) Close() {
 	if p.listProcessor != nil {
 		p.listProcessor.Close()
 	}
+	if p.labelProcessor != nil {
+		p.labelProcessor.Close()
+	}
 	if p.actorFetcher != nil {
 		p.actorFetcher.Stop()
-	}
-	if p.labelFetcher != nil {
-		p.labelFetcher.Stop()
 	}
 	if p.listFetcher != nil {
 		p.listFetcher.Stop()

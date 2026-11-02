@@ -91,18 +91,23 @@ func (db *DB) initSchema() error {
 		`
 		CREATE TABLE IF NOT EXISTS labels (
 			id BIGSERIAL PRIMARY KEY,
+			seq BIGINT NOT NULL,
+			upstream_seq BIGINT,
 			src TEXT NOT NULL,
 			uri TEXT NOT NULL,
-			cid TEXT,
 			val TEXT NOT NULL,
-			neg BOOLEAN DEFAULT FALSE,
+			ver INTEGER DEFAULT 1,
 			cts TIMESTAMPTZ,
+			sig BYTEA,
 			received_at TIMESTAMPTZ NOT NULL
 		);
+		CREATE INDEX IF NOT EXISTS idx_labels_seq ON labels(seq);
 		CREATE INDEX IF NOT EXISTS idx_labels_src ON labels(src);
 		CREATE INDEX IF NOT EXISTS idx_labels_uri ON labels(uri);
 		CREATE INDEX IF NOT EXISTS idx_labels_val ON labels(val);
+		CREATE INDEX IF NOT EXISTS idx_labels_cts ON labels(cts);
 		CREATE INDEX IF NOT EXISTS idx_labels_received_at ON labels(received_at);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_unique ON labels(src, uri, val, ver);
 		`,
 
 		// Post history table

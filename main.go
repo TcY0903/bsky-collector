@@ -40,8 +40,15 @@ func main() {
 	// Firehose client
 	firehoseClient := stream.NewFirehoseClient(logger)
 	go func() {
-		logger.Printf("🔌 Starting Firehose client...")
+		logger.Printf("🔌 Starting Firehose client with auto-reconnect...")
 		firehoseClient.StartWithRetry(ctx)
+	}()
+
+	// Labeler Relay client
+	labelerRelay := stream.NewLabelerRelayClient(logger)
+	go func() {
+		logger.Printf("🏷️ Starting Labeler Relay client with auto-reconnect...")
+		labelerRelay.StartWithRetry(ctx)
 	}()
 
 	// Processor
@@ -66,7 +73,7 @@ func main() {
 
 		case event, ok := <-firehoseClient.Events():
 			if !ok {
-				logger.Printf("📭 Event channel closed")
+				logger.Printf("📭 Firehose event channel closed")
 				return
 			}
 			if err := proc.ProcessRawEvent(event); err != nil {
@@ -74,6 +81,16 @@ func main() {
 				continue
 			}
 			eventCount++
+
+		case message, ok := <-labelerRelay.Events():
+			if !ok {
+				logger.Printf("📭 Labeler Relay event channel closed")
+				return
+			}
+			if err := proc.ProcessLabelMessage(message); err != nil {
+				logger.Printf("❌ Failed to process label message: %v", err)
+				continue
+			}
 		}
 	}
 }
@@ -95,9 +112,10 @@ func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, 
 
 			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Blocks=%d, Lists=%d, Throughput=%.1f events/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, Blocks=%d, Lists=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
 				stats["total_actors"],
+				stats["total_labels"],
 				stats["total_blocks"],
 				stats["total_lists"],
 				eventsPerSec,

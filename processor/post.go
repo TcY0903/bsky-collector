@@ -106,7 +106,7 @@ func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit,
 
 	if existingPost == nil {
 		// Post was created before we started listening.
-		//pp.p.logger.Printf("📝 Update for unknown post (created before startup): %s", uri)
+		//pp.p.logger.Printf("Update unknown post (created before startup): %s", uri)
 		post, err := pp.buildPost(commit, op)
 		if err != nil {
 			return err
@@ -166,7 +166,7 @@ func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit,
 		pp.batchMu.Unlock()
 	}
 
-	//pp.p.logger.Printf("📝 Updated post: %s", uri)
+	//pp.p.logger.Printf("Updated post: %s", uri)
 	return nil
 }
 
@@ -421,9 +421,9 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 	pp.enrichPosts(batch)
 
 	if err := pp.p.db.SavePostsBatch(batch); err != nil {
-		pp.p.logger.Printf("⚠️ Failed to save batch of %d posts: %v", len(batch), err)
+		pp.p.logger.Printf("Warning: Failed to save batch of %d posts: %v", len(batch), err)
 	} else {
-		//pp.p.logger.Printf("📦 Saved %d posts in batch", len(batch))
+		//pp.p.logger.Printf("Saved %d posts in batch", len(batch))
 	}
 
 	// Queue actors only for posts that need it (create events or new actors)
@@ -437,17 +437,6 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 		if len(needActor) > 0 {
 			pp.p.actorFetcher.QueueActorsForPosts(needActor)
 		}
-	}
-
-	// Queue labels for all posts
-	if pp.p.labelFetcher != nil {
-		go func() {
-			for _, post := range batch {
-				if post.URI != "" {
-					pp.p.labelFetcher.QueueURI(post.URI)
-				}
-			}
-		}()
 	}
 }
 

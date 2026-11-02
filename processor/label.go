@@ -1,214 +1,192 @@
 package processor
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/url"
+	"bytes"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/fxamacker/cbor/v2"
 
 	"bsky-collector/models"
 )
 
-const maxURLLength = 7000
-
-// LabelFetcher handles fetching labels for posts via the queryLabels API.
-type LabelFetcher struct {
-	p         *Processor
-	queue     chan string
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	started   bool
-	mu        sync.Mutex
-	batchSize int
-	ticker    *time.Ticker
-	client    *http.Client
+// LabelProcessor handles batch processing of labels from Labeler Relay.
+type LabelProcessor struct {
+	p          *Processor
+	labelBatch []*models.Label
+	batchMu    sync.Mutex
+	batchSize  int
+	ticker     *time.Ticker
+	stopCh     chan struct{}
+	closeOnce  sync.Once
 }
 
-func NewLabelFetcher(p *Processor) *LabelFetcher {
-	lf := &LabelFetcher{
-		p:         p,
-		queue:     make(chan string, 5000),
-		stopCh:    make(chan struct{}),
-		batchSize: 250,
-		ticker:    time.NewTicker(3 * time.Second),
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+// NewLabelProcessor creates a new LabelProcessor.
+func NewLabelProcessor(p *Processor) *LabelProcessor {
+	lp := &LabelProcessor{
+		p:          p,
+		labelBatch: make([]*models.Label, 0, 500),
+		batchSize:  500,
+		ticker:     time.NewTicker(3 * time.Second),
+		stopCh:     make(chan struct{}),
 	}
-	return lf
+	go lp.autoFlush()
+	return lp
 }
 
-func (lf *LabelFetcher) Start() {
-	lf.mu.Lock()
-	defer lf.mu.Unlock()
-	if lf.started {
-		return
-	}
-	lf.started = true
-	lf.wg.Add(1)
-	go lf.worker()
-}
-
-func (lf *LabelFetcher) Stop() {
-	lf.mu.Lock()
-	defer lf.mu.Unlock()
-	if !lf.started {
-		return
-	}
-	lf.started = false
-	close(lf.stopCh)
-	lf.ticker.Stop()
-	lf.wg.Wait()
-}
-
-func (lf *LabelFetcher) QueueURI(uri string) {
-	if uri == "" {
-		return
-	}
-	select {
-	case lf.queue <- uri:
-	default:
-		lf.p.logger.Printf("⚠️ Label queue full, dropping %s", uri)
-	}
-}
-
-func (lf *LabelFetcher) worker() {
-	defer lf.wg.Done()
-
-	batch := make([]string, 0, lf.batchSize)
-	ticker := lf.ticker
-
+func (lp *LabelProcessor) autoFlush() {
 	for {
 		select {
-		case <-lf.stopCh:
-			if len(batch) > 0 {
-				lf.fetchBatch(batch)
-			}
+		case <-lp.ticker.C:
+			lp.flushLabels()
+		case <-lp.stopCh:
 			return
-		case uri := <-lf.queue:
-			batch = append(batch, uri)
-			if len(batch) >= lf.batchSize {
-				lf.fetchBatch(batch)
-				batch = make([]string, 0, lf.batchSize)
-			}
-		case <-ticker.C:
-			if len(batch) > 0 {
-				lf.fetchBatch(batch)
-				batch = make([]string, 0, lf.batchSize)
-			}
 		}
 	}
 }
 
-// fetchBatch splits URIs into groups by URL length and fetches each group.
-func (lf *LabelFetcher) fetchBatch(uris []string) {
-	if len(uris) == 0 {
-		return
+// ProcessLabelMessage parses a raw message from Labeler Relay.
+func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
+	dec := cbor.NewDecoder(bytes.NewReader(message))
+
+	// Frame header
+	var header map[string]interface{}
+	if err := dec.Decode(&header); err != nil {
+		return fmt.Errorf("header decode failed: %w", err)
 	}
 
-	// Build base URL for length estimation
-	baseURL := "https://mod.bsky.app/xrpc/com.atproto.label.queryLabels?limit=250&uriPatterns="
-	baseLen := len(baseURL)
+	if t, _ := header["t"].(string); t != "#labels" {
+		return nil
+	}
 
-	var groups [][]string
-	var currentGroup []string
-	currentLen := baseLen
+	// Payload
+	var payload interface{}
+	if err := dec.Decode(&payload); err != nil {
+		return fmt.Errorf("payload decode failed: %w", err)
+	}
 
-	for _, uri := range uris {
-		// Each URI adds "&uriPatterns=" prefix + URI length
-		addedLen := len(uri) + len("&uriPatterns=")
-		if currentLen+addedLen > maxURLLength && len(currentGroup) > 0 {
-			groups = append(groups, currentGroup)
-			currentGroup = []string{}
-			currentLen = baseLen
+	m, ok := payload.(map[interface{}]interface{})
+	if !ok {
+		return nil
+	}
+
+	seq := toInt64(m["seq"])
+	upstreamSeq := toInt64(m["upstreamSeq"])
+
+	labelsRaw, ok := m["labels"]
+	if !ok {
+		return nil
+	}
+	labelsSlice, ok := labelsRaw.([]interface{})
+	if !ok {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	batch := make([]*models.Label, 0, len(labelsSlice))
+
+	for _, labelRaw := range labelsSlice {
+		labelMap, ok := labelRaw.(map[interface{}]interface{})
+		if !ok {
+			continue
 		}
-		currentGroup = append(currentGroup, uri)
-		currentLen += addedLen
-	}
-	if len(currentGroup) > 0 {
-		groups = append(groups, currentGroup)
-	}
 
-	// Fetch each group
-	for _, group := range groups {
-		lf.fetchGroup(group)
-	}
-}
+		label := &models.Label{
+			Seq:         seq,
+			UpstreamSeq: upstreamSeq,
+			Src:         getString(labelMap, "src"),
+			URI:         getString(labelMap, "uri"),
+			Val:         getString(labelMap, "val"),
+			Ver:         int(toInt64(labelMap["ver"])),
+			ReceivedAt:  now,
+		}
+		if label.Ver == 0 {
+			label.Ver = 1
+		}
 
-// fetchGroup fetches labels for a single group of URIs.
-func (lf *LabelFetcher) fetchGroup(uris []string) {
-	if len(uris) == 0 {
-		return
-	}
+		if ctsStr := getString(labelMap, "cts"); ctsStr != "" {
+			if t, err := time.Parse(time.RFC3339, ctsStr); err == nil {
+				label.CTS = t.UTC()
+			}
+		}
 
-	params := url.Values{}
-	for _, uri := range uris {
-		params.Add("uriPatterns", uri)
-	}
-	params.Add("limit", "250")
+		if sigRaw, ok := labelMap["sig"].([]byte); ok {
+			label.Sig = sigRaw
+		}
 
-	reqURL := "https://mod.bsky.app/xrpc/com.atproto.label.queryLabels?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(lf.p.ctx, "GET", reqURL, nil)
-	if err != nil {
-		lf.p.logger.Printf("⚠️ Failed to create label request: %v", err)
-		return
+		if label.URI == "" || label.Val == "" || label.Src == "" {
+			continue
+		}
+		batch = append(batch, label)
 	}
 
-	resp, err := lf.client.Do(req)
-	if err != nil {
-		if lf.p.ctx.Err() == context.Canceled {
-			lf.p.logger.Printf("⚠️ Label request cancelled (shutdown)")
+	if len(batch) > 0 {
+		lp.batchMu.Lock()
+		lp.labelBatch = append(lp.labelBatch, batch...)
+		if len(lp.labelBatch) >= lp.batchSize {
+			b := lp.labelBatch
+			lp.labelBatch = make([]*models.Label, 0, lp.batchSize)
+			lp.batchMu.Unlock()
+			lp.flushLabelsWithBatch(b)
 		} else {
-			lf.p.logger.Printf("⚠️ Failed to fetch labels: %v", err)
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		lf.p.logger.Printf("⚠️ Label API returned status %d", resp.StatusCode)
-		return
-	}
-
-	var result struct {
-		Labels []struct {
-			Src string `json:"src"`
-			URI string `json:"uri"`
-			CID string `json:"cid,omitempty"`
-			Val string `json:"val"`
-			Neg bool   `json:"neg,omitempty"`
-			CTS string `json:"cts"`
-		} `json:"labels"`
-		Cursor *string `json:"cursor,omitempty"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		lf.p.logger.Printf("⚠️ Failed to decode label response: %v", err)
-		return
-	}
-
-	labels := make([]*models.Label, 0, len(result.Labels))
-	for _, l := range result.Labels {
-		cts, err := time.Parse(time.RFC3339, l.CTS)
-		if err != nil {
-			cts = time.Now().UTC()
-		}
-		labels = append(labels, &models.Label{
-			Src:        l.Src,
-			URI:        l.URI,
-			CID:        l.CID,
-			Val:        l.Val,
-			Neg:        l.Neg,
-			CTS:        cts.UTC(),
-			ReceivedAt: time.Now().UTC(),
-		})
-	}
-
-	if len(labels) > 0 {
-		if err := lf.p.db.SaveLabelsBatch(labels); err != nil {
-			lf.p.logger.Printf("⚠️ Failed to save %d labels: %v", len(labels), err)
+			lp.batchMu.Unlock()
 		}
 	}
+
+	return nil
+}
+
+func (lp *LabelProcessor) flushLabels() {
+	lp.batchMu.Lock()
+	if len(lp.labelBatch) == 0 {
+		lp.batchMu.Unlock()
+		return
+	}
+	batch := lp.labelBatch
+	lp.labelBatch = make([]*models.Label, 0, lp.batchSize)
+	lp.batchMu.Unlock()
+	lp.flushLabelsWithBatch(batch)
+}
+
+func (lp *LabelProcessor) flushLabelsWithBatch(batch []*models.Label) {
+	if len(batch) == 0 {
+		return
+	}
+	if err := lp.p.db.SaveLabelsBatch(batch); err != nil {
+		lp.p.logger.Printf("⚠️ Failed to save batch of %d labels: %v", len(batch), err)
+	} else {
+		lp.p.logger.Printf("🏷️ Saved %d labels in batch", len(batch))
+	}
+}
+
+// Close shuts down the LabelProcessor.
+func (lp *LabelProcessor) Close() {
+	lp.closeOnce.Do(func() {
+		close(lp.stopCh)
+		lp.ticker.Stop()
+		lp.flushLabels()
+	})
+}
+
+// Helper functions
+func getString(m map[interface{}]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func toInt64(v interface{}) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case uint64:
+		return int64(n)
+	case int:
+		return int64(n)
+	case uint:
+		return int64(n)
+	}
+	return 0
 }
