@@ -67,6 +67,29 @@ func (db *DB) initSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
 		`,
 
+		// Post history table
+		`
+		CREATE TABLE IF NOT EXISTS post_history (
+			id BIGSERIAL PRIMARY KEY,
+			post_uri TEXT NOT NULL,
+			cid TEXT NOT NULL,
+			text TEXT,
+			media JSONB,
+			reply_parent TEXT,
+			reply_root TEXT,
+			created_at TIMESTAMPTZ,
+			received_at TIMESTAMPTZ NOT NULL,
+			valid_to TIMESTAMPTZ NOT NULL,
+			status TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_post_history_uri ON post_history(post_uri);
+		CREATE INDEX IF NOT EXISTS idx_post_history_cid ON post_history(cid);
+		CREATE INDEX IF NOT EXISTS idx_post_history_created_at ON post_history(created_at);
+		CREATE INDEX IF NOT EXISTS idx_post_history_received_at ON post_history(received_at);
+		CREATE INDEX IF NOT EXISTS idx_post_history_valid_to ON post_history(valid_to);
+		CREATE INDEX IF NOT EXISTS idx_post_history_status ON post_history(status);
+		`,
+
 		// Actors table
 		`
 		CREATE TABLE IF NOT EXISTS actors (
@@ -109,27 +132,21 @@ func (db *DB) initSchema() error {
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_labels_unique ON labels(src, uri, val, ver);
 		`,
 
-		// Post history table
+		// Labelers table
 		`
-		CREATE TABLE IF NOT EXISTS post_history (
-			id BIGSERIAL PRIMARY KEY,
-			post_uri TEXT NOT NULL,
-			cid TEXT NOT NULL,
-			text TEXT,
-			media JSONB,
-			reply_parent TEXT,
-			reply_root TEXT,
-			created_at TIMESTAMPTZ,
-			received_at TIMESTAMPTZ NOT NULL,
-			valid_to TIMESTAMPTZ NOT NULL,
-			status TEXT NOT NULL
+		CREATE TABLE IF NOT EXISTS labelers (
+			did TEXT PRIMARY KEY,
+			endpoint TEXT,
+			status TEXT DEFAULT 'unknown',
+			failure_type TEXT,
+			last_connected TIMESTAMPTZ,
+			last_error TEXT,
+			fail_count INTEGER DEFAULT 0,
+			first_seen TIMESTAMPTZ NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL
 		);
-		CREATE INDEX IF NOT EXISTS idx_post_history_uri ON post_history(post_uri);
-		CREATE INDEX IF NOT EXISTS idx_post_history_cid ON post_history(cid);
-		CREATE INDEX IF NOT EXISTS idx_post_history_created_at ON post_history(created_at);
-		CREATE INDEX IF NOT EXISTS idx_post_history_received_at ON post_history(received_at);
-		CREATE INDEX IF NOT EXISTS idx_post_history_valid_to ON post_history(valid_to);
-		CREATE INDEX IF NOT EXISTS idx_post_history_status ON post_history(status);
+		CREATE INDEX IF NOT EXISTS idx_labelers_status ON labelers(status);
+		CREATE INDEX IF NOT EXISTS idx_labelers_first_seen ON labelers(first_seen);
 		`,
 
 		// Blocks table
@@ -244,9 +261,10 @@ func (db *DB) GetStats() (map[string]int64, error) {
 	stats := make(map[string]int64)
 	queries := map[string]string{
 		"total_posts":       "SELECT COUNT(*) FROM posts;",
+		"total_history":     "SELECT COUNT(*) FROM post_history;",
 		"total_actors":      "SELECT COUNT(*) FROM actors;",
 		"total_labels":      "SELECT COUNT(*) FROM labels;",
-		"total_history":     "SELECT COUNT(*) FROM post_history;",
+		"total_labelers":    "SELECT COUNT(*) FROM labelers;",
 		"total_blocks":      "SELECT COUNT(*) FROM blocks;",
 		"total_lists":       "SELECT COUNT(*) FROM lists;",
 		"total_list_items":  "SELECT COUNT(*) FROM list_items;",

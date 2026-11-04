@@ -1,4 +1,6 @@
-.env
-main
-*.db
 *.txt
+
+.env
+labelers.csv
+labelers.md
+main

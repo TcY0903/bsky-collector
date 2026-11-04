@@ -152,9 +152,7 @@ func (lp *LabelProcessor) flushLabelsWithBatch(batch []*models.Label) {
 		return
 	}
 	if err := lp.p.db.SaveLabelsBatch(batch); err != nil {
-		lp.p.logger.Printf("⚠️ Failed to save batch of %d labels: %v", len(batch), err)
-	} else {
-		lp.p.logger.Printf("🏷️ Saved %d labels in batch", len(batch))
+		lp.p.logger.Printf("WARN: failed to save batch of %d labels: %v", len(batch), err)
 	}
 }
 

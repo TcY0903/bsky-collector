@@ -45,7 +45,7 @@ func main() {
 	}()
 
 	// Label aggregator (connects directly to labelers)
-	labelAggregator := stream.NewLabelAggregator(logger, "labelers.csv")
+	labelAggregator := stream.NewLabelAggregator(logger, db, "labelers.csv")
 	go func() {
 		logger.Printf("🏷️ Starting label aggregator...")
 		labelAggregator.StartWithRetry(ctx)
