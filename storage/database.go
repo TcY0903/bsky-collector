@@ -92,7 +92,6 @@ func (db *DB) initSchema() error {
 		CREATE TABLE IF NOT EXISTS labels (
 			id BIGSERIAL PRIMARY KEY,
 			seq BIGINT NOT NULL,
-			upstream_seq BIGINT,
 			src TEXT NOT NULL,
 			uri TEXT NOT NULL,
 			val TEXT NOT NULL,

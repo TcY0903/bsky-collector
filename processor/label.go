@@ -11,7 +11,7 @@ import (
 	"bsky-collector/models"
 )
 
-// LabelProcessor handles batch processing of labels from Labeler Relay.
+// LabelProcessor handles batch processing of labels from the aggregator.
 type LabelProcessor struct {
 	p          *Processor
 	labelBatch []*models.Label
@@ -46,7 +46,7 @@ func (lp *LabelProcessor) autoFlush() {
 	}
 }
 
-// ProcessLabelMessage parses a raw message from Labeler Relay.
+// ProcessLabelMessage parses a raw message from the label aggregator.
 func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	dec := cbor.NewDecoder(bytes.NewReader(message))
 
@@ -72,7 +72,6 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	}
 
 	seq := toInt64(m["seq"])
-	upstreamSeq := toInt64(m["upstreamSeq"])
 
 	labelsRaw, ok := m["labels"]
 	if !ok {
@@ -93,13 +92,12 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 		}
 
 		label := &models.Label{
-			Seq:         seq,
-			UpstreamSeq: upstreamSeq,
-			Src:         getString(labelMap, "src"),
-			URI:         getString(labelMap, "uri"),
-			Val:         getString(labelMap, "val"),
-			Ver:         int(toInt64(labelMap["ver"])),
-			ReceivedAt:  now,
+			Seq:        seq,
+			Src:        getString(labelMap, "src"),
+			URI:        getString(labelMap, "uri"),
+			Val:        getString(labelMap, "val"),
+			Ver:        int(toInt64(labelMap["ver"])),
+			ReceivedAt: now,
 		}
 		if label.Ver == 0 {
 			label.Ver = 1
@@ -169,7 +167,8 @@ func (lp *LabelProcessor) Close() {
 	})
 }
 
-// Helper functions
+// --- helpers ---
+
 func getString(m map[interface{}]interface{}, key string) string {
 	if v, ok := m[key].(string); ok {
 		return v

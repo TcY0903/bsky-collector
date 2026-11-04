@@ -9,13 +9,12 @@ import (
 // SaveLabel inserts a single label into the database.
 func (db *DB) SaveLabel(label *models.Label) error {
 	query := `
-	INSERT INTO labels (seq, upstream_seq, src, uri, val, ver, cts, sig, received_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	INSERT INTO labels (seq, src, uri, val, ver, cts, sig, received_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	ON CONFLICT (src, uri, val, ver) DO NOTHING
 	`
 	_, err := db.conn.Exec(query,
 		label.Seq,
-		label.UpstreamSeq,
 		label.Src,
 		label.URI,
 		label.Val,
@@ -40,8 +39,8 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO labels (seq, upstream_seq, src, uri, val, ver, cts, sig, received_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO labels (seq, src, uri, val, ver, cts, sig, received_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (src, uri, val, ver) DO NOTHING
 	`)
 	if err != nil {
@@ -52,7 +51,6 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 	for _, label := range labels {
 		_, err := stmt.Exec(
 			label.Seq,
-			label.UpstreamSeq,
 			label.Src,
 			label.URI,
 			label.Val,
@@ -72,7 +70,7 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 // GetLabelsByURI returns all labels applied to a specific URI.
 func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 	query := `
-	SELECT id, seq, upstream_seq, src, uri, val, ver, cts, sig, received_at
+	SELECT id, seq, src, uri, val, ver, cts, sig, received_at
 	FROM labels WHERE uri = $1
 	ORDER BY cts DESC
 	`
@@ -88,7 +86,6 @@ func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 		err := rows.Scan(
 			&label.ID,
 			&label.Seq,
-			&label.UpstreamSeq,
 			&label.Src,
 			&label.URI,
 			&label.Val,
@@ -112,7 +109,7 @@ func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 // GetLabelsBySrc returns all labels issued by a specific labeler.
 func (db *DB) GetLabelsBySrc(src string, limit int) ([]*models.Label, error) {
 	query := `
-	SELECT id, seq, upstream_seq, src, uri, val, ver, cts, sig, received_at
+	SELECT id, seq, src, uri, val, ver, cts, sig, received_at
 	FROM labels WHERE src = $1
 	ORDER BY cts DESC
 	LIMIT $2
@@ -129,7 +126,6 @@ func (db *DB) GetLabelsBySrc(src string, limit int) ([]*models.Label, error) {
 		err := rows.Scan(
 			&label.ID,
 			&label.Seq,
-			&label.UpstreamSeq,
 			&label.Src,
 			&label.URI,
 			&label.Val,

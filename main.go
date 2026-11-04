@@ -37,19 +37,20 @@ func main() {
 		cancel()
 	}()
 
-	// Firehose client
+	// Firehose client (for posts, blocks, lists)
 	firehoseClient := stream.NewFirehoseClient(logger)
 	go func() {
 		logger.Printf("🔌 Starting Firehose client with auto-reconnect...")
 		firehoseClient.StartWithRetry(ctx)
 	}()
 
-	// Labeler Relay client
-	labelerRelay := stream.NewLabelerRelayClient(logger)
+	// Label aggregator (connects directly to labelers)
+	labelAggregator := stream.NewLabelAggregator(logger, "labelers.csv")
 	go func() {
-		logger.Printf("🏷️ Starting Labeler Relay client with auto-reconnect...")
-		labelerRelay.StartWithRetry(ctx)
+		logger.Printf("🏷️ Starting label aggregator...")
+		labelAggregator.StartWithRetry(ctx)
 	}()
+	defer labelAggregator.Close()
 
 	// Processor
 	proc := processor.NewProcessor(cfg, db, logger)
@@ -60,11 +61,12 @@ func main() {
 
 	logger.Printf("🔄 Starting event processing...")
 	eventCount := 0
+	labelCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Printf("📊 Shutting down. Total events processed: %d", eventCount)
+			logger.Printf("📊 Shutting down. Total events: %d, Total label messages: %d", eventCount, labelCount)
 			logger.Printf("👋 Program finished")
 			return
 
@@ -82,15 +84,16 @@ func main() {
 			}
 			eventCount++
 
-		case message, ok := <-labelerRelay.Events():
+		case message, ok := <-labelAggregator.Events():
 			if !ok {
-				logger.Printf("📭 Labeler Relay event channel closed")
-				return
+				logger.Printf("📭 Label aggregator channel closed")
+				continue
 			}
 			if err := proc.ProcessLabelMessage(message); err != nil {
 				logger.Printf("❌ Failed to process label message: %v", err)
 				continue
 			}
+			labelCount++
 		}
 	}
 }
@@ -112,12 +115,15 @@ func reportStats(db *storage.DB, logger *log.Logger, proc *processor.Processor, 
 
 			eventsPerSec, _ := proc.GetThroughput()
 
-			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, Blocks=%d, Lists=%d, Throughput=%.1f events/sec",
+			logger.Printf("📊 Stats: Posts=%d, Actors=%d, Labels=%d, History=%d, Blocks=%d, Lists=%d, ListItems=%d, ListBlocks=%d, Throughput=%.1f events/sec",
 				stats["total_posts"],
 				stats["total_actors"],
 				stats["total_labels"],
+				stats["total_history"],
 				stats["total_blocks"],
 				stats["total_lists"],
+				stats["total_list_items"],
+				stats["total_list_blocks"],
 				eventsPerSec,
 			)
 		}
