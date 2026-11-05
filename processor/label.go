@@ -96,6 +96,7 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 			URI:        getString(labelMap, "uri"),
 			Val:        getString(labelMap, "val"),
 			Ver:        int(toInt64(labelMap["ver"])),
+			Neg:        getBool(labelMap, "neg"),
 			ReceivedAt: now,
 		}
 		if label.Ver == 0 {
@@ -117,8 +118,8 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 		}
 		batch = append(batch, label)
 
-		// If this label points to a post, ensure the post exists
-		if strings.Contains(label.URI, "/app.bsky.feed.post/") {
+		// If this label points to a post, ensure the post exists (skip negation labels)
+		if !label.Neg && strings.Contains(label.URI, "/app.bsky.feed.post/") {
 			lp.ensurePostExists(label.URI)
 		}
 	}
@@ -151,7 +152,6 @@ func (lp *LabelProcessor) ensurePostExists(postURI string) {
 		return // Already exists
 	}
 
-	// Post not found, queue for fetching
 	if lp.p.postFetcher != nil {
 		lp.p.postFetcher.QueueURI(postURI)
 	}
@@ -194,6 +194,13 @@ func getString(m map[interface{}]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func getBool(m map[interface{}]interface{}, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
 }
 
 func toInt64(v interface{}) int64 {

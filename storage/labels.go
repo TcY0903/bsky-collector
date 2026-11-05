@@ -9,9 +9,9 @@ import (
 // SaveLabel inserts a single label into the database.
 func (db *DB) SaveLabel(label *models.Label) error {
 	query := `
-	INSERT INTO labels (seq, src, uri, val, ver, cts, sig, received_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	ON CONFLICT (src, uri, val, ver) DO NOTHING
+	INSERT INTO labels (seq, src, uri, val, ver, neg, cts, sig, received_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	ON CONFLICT (src, uri, val, ver, neg) DO NOTHING
 	`
 	_, err := db.conn.Exec(query,
 		label.Seq,
@@ -19,6 +19,7 @@ func (db *DB) SaveLabel(label *models.Label) error {
 		label.URI,
 		label.Val,
 		label.Ver,
+		label.Neg,
 		label.CTS,
 		label.Sig,
 		label.ReceivedAt,
@@ -39,9 +40,9 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO labels (seq, src, uri, val, ver, cts, sig, received_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (src, uri, val, ver) DO NOTHING
+		INSERT INTO labels (seq, src, uri, val, ver, neg, cts, sig, received_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (src, uri, val, ver, neg) DO NOTHING
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
@@ -55,6 +56,7 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 			label.URI,
 			label.Val,
 			label.Ver,
+			label.Neg,
 			label.CTS,
 			label.Sig,
 			label.ReceivedAt,
@@ -70,7 +72,7 @@ func (db *DB) SaveLabelsBatch(labels []*models.Label) error {
 // GetLabelsByURI returns all labels applied to a specific URI.
 func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 	query := `
-	SELECT id, seq, src, uri, val, ver, cts, sig, received_at
+	SELECT id, seq, src, uri, val, ver, neg, cts, sig, received_at
 	FROM labels WHERE uri = $1
 	ORDER BY cts DESC
 	`
@@ -90,6 +92,7 @@ func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 			&label.URI,
 			&label.Val,
 			&label.Ver,
+			&label.Neg,
 			&label.CTS,
 			&label.Sig,
 			&label.ReceivedAt,
@@ -109,7 +112,7 @@ func (db *DB) GetLabelsByURI(uri string) ([]*models.Label, error) {
 // GetLabelsBySrc returns all labels issued by a specific labeler.
 func (db *DB) GetLabelsBySrc(src string, limit int) ([]*models.Label, error) {
 	query := `
-	SELECT id, seq, src, uri, val, ver, cts, sig, received_at
+	SELECT id, seq, src, uri, val, ver, neg, cts, sig, received_at
 	FROM labels WHERE src = $1
 	ORDER BY cts DESC
 	LIMIT $2
@@ -130,6 +133,7 @@ func (db *DB) GetLabelsBySrc(src string, limit int) ([]*models.Label, error) {
 			&label.URI,
 			&label.Val,
 			&label.Ver,
+			&label.Neg,
 			&label.CTS,
 			&label.Sig,
 			&label.ReceivedAt,
