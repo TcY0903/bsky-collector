@@ -21,23 +21,15 @@ type Processor struct {
 	logger *log.Logger
 	ctx    context.Context
 
-	// Post processor
-	postProcessor *PostProcessor
-
-	// Block processor
+	postProcessor  *PostProcessor
 	blockProcessor *BlockProcessor
-
-	// List processor
-	listProcessor *ListProcessor
-
-	// Label processor (from Labeler Relay)
+	listProcessor  *ListProcessor
 	labelProcessor *LabelProcessor
 
-	// Fetchers
 	actorFetcher *ActorFetcher
 	listFetcher  *ListFetcher
+	postFetcher  *PostFetcher // NEW
 
-	// Throughput statistics
 	statsMu      sync.RWMutex
 	totalEvents  int64
 	totalPosts   int64
@@ -54,24 +46,19 @@ func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Proce
 		lastReset: time.Now(),
 	}
 
-	// Initialize post processor
 	p.postProcessor = NewPostProcessor(p)
-
-	// Initialize block processor
 	p.blockProcessor = NewBlockProcessor(p)
-
-	// Initialize list processor
 	p.listProcessor = NewListProcessor(p)
-
-	// Initialize label processor
 	p.labelProcessor = NewLabelProcessor(p)
 
-	// Initialize fetchers
 	p.actorFetcher = NewActorFetcher(p)
 	p.actorFetcher.Start()
 
 	p.listFetcher = NewListFetcher(p)
 	p.listFetcher.Start()
+
+	p.postFetcher = NewPostFetcher(p) // NEW
+	p.postFetcher.Start()
 
 	go p.calculateThroughput()
 
@@ -97,28 +84,25 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 			continue
 		}
 
-		// Process post events
 		if strings.HasPrefix(op.Path, "app.bsky.feed.post/") {
 			if err := p.postProcessor.ProcessPost(commit, op); err != nil {
-				p.logger.Printf("⚠️ Failed to handle post: %v", err)
+				p.logger.Printf("WARN: failed to handle post: %v", err)
 			}
 			continue
 		}
 
-		// Process block events
 		if strings.HasPrefix(op.Path, "app.bsky.graph.block/") {
 			if err := p.blockProcessor.ProcessBlock(commit, op); err != nil {
-				p.logger.Printf("⚠️ Failed to handle block: %v", err)
+				p.logger.Printf("WARN: failed to handle block: %v", err)
 			}
 			continue
 		}
 
-		// Process list events (list, listitem, listblock)
 		if strings.HasPrefix(op.Path, "app.bsky.graph.list/") ||
 			strings.HasPrefix(op.Path, "app.bsky.graph.listitem/") ||
 			strings.HasPrefix(op.Path, "app.bsky.graph.listblock/") {
 			if err := p.listProcessor.ProcessListEvent(commit, op); err != nil {
-				p.logger.Printf("⚠️ Failed to handle list event: %v", err)
+				p.logger.Printf("WARN: failed to handle list event: %v", err)
 			}
 			continue
 		}
@@ -127,14 +111,14 @@ func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
 	return nil
 }
 
-// ProcessLabelMessage processes a raw message from Labeler Relay.
+// ProcessLabelMessage processes a raw message from the label aggregator.
 func (p *Processor) ProcessLabelMessage(message []byte) error {
 	return p.labelProcessor.ProcessLabelMessage(message)
 }
 
 // Close gracefully shuts down the processor.
 func (p *Processor) Close() {
-	p.logger.Println("🛑 Processor shutting down...")
+	p.logger.Println("Shutting down processor")
 
 	if p.postProcessor != nil {
 		p.postProcessor.Close()
@@ -154,8 +138,11 @@ func (p *Processor) Close() {
 	if p.listFetcher != nil {
 		p.listFetcher.Stop()
 	}
+	if p.postFetcher != nil {
+		p.postFetcher.Stop()
+	}
 
-	p.logger.Println("✅ Processor closed")
+	p.logger.Println("Processor closed")
 }
 
 // sanitizeText removes NULL bytes, invalid UTF-8 sequences and control characters
@@ -169,7 +156,7 @@ func sanitizeText(text string) string {
 
 	// Ensure valid UTF-8
 	if !utf8.ValidString(text) {
-		text = strings.ToValidUTF8(text, "�")
+		text = strings.ToValidUTF8(text, " ")
 	}
 
 	// Remove control characters except newline, tab, carriage return

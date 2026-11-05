@@ -3,6 +3,7 @@ package processor
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,7 +51,6 @@ func (lp *LabelProcessor) autoFlush() {
 func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	dec := cbor.NewDecoder(bytes.NewReader(message))
 
-	// Frame header
 	var header map[string]interface{}
 	if err := dec.Decode(&header); err != nil {
 		return fmt.Errorf("header decode failed: %w", err)
@@ -60,7 +60,6 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 		return nil
 	}
 
-	// Payload
 	var payload interface{}
 	if err := dec.Decode(&payload); err != nil {
 		return fmt.Errorf("payload decode failed: %w", err)
@@ -117,6 +116,11 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 			continue
 		}
 		batch = append(batch, label)
+
+		// If this label points to a post, ensure the post exists
+		if strings.Contains(label.URI, "/app.bsky.feed.post/") {
+			lp.ensurePostExists(label.URI)
+		}
 	}
 
 	if len(batch) > 0 {
@@ -133,6 +137,24 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	}
 
 	return nil
+}
+
+// ensurePostExists checks if the post referenced by the label exists locally;
+// if not, queues it for fetching.
+func (lp *LabelProcessor) ensurePostExists(postURI string) {
+	post, err := lp.p.db.GetPostByURI(postURI)
+	if err != nil {
+		lp.p.logger.Printf("WARN: failed to check post existence %s: %v", postURI, err)
+		return
+	}
+	if post != nil {
+		return // Already exists
+	}
+
+	// Post not found, queue for fetching
+	if lp.p.postFetcher != nil {
+		lp.p.postFetcher.QueueURI(postURI)
+	}
 }
 
 func (lp *LabelProcessor) flushLabels() {
