@@ -118,9 +118,8 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 		}
 		batch = append(batch, label)
 
-		// If this label points to a post, ensure the post exists (skip negation labels)
-		if !label.Neg && strings.Contains(label.URI, "/app.bsky.feed.post/") {
-			lp.ensurePostExists(label.URI)
+		if !label.Neg {
+			lp.ensureTargetExists(label.URI)
 		}
 	}
 
@@ -140,21 +139,35 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	return nil
 }
 
-// ensurePostExists checks if the post referenced by the label exists locally;
-// if not, queues it for fetching.
-func (lp *LabelProcessor) ensurePostExists(postURI string) {
-	post, err := lp.p.db.GetPostByURI(postURI)
-	if err != nil {
-		lp.p.logger.Printf("WARN: failed to check post existence %s: %v", postURI, err)
-		return
+// ensureTargetExists checks if the target of a label exists locally,
+// and fetches it if missing. Handles both posts and actor profiles.
+func (lp *LabelProcessor) ensureTargetExists(uri string) {
+	switch {
+	case strings.Contains(uri, "/app.bsky.feed.post/"):
+		post, err := lp.p.db.GetPostByURI(uri)
+		if err != nil {
+			lp.p.logger.Printf("WARN: failed to check post existence %s: %v", uri, err)
+			return
+		}
+		if post == nil && lp.p.postFetcher != nil {
+			lp.p.postFetcher.QueueURI(uri)
+		}
+	case strings.Contains(uri, "/app.bsky.actor.profile/"):
+		did := extractDIDFromURI(uri)
+		if did != "" && lp.p.actorFetcher != nil {
+			lp.p.actorFetcher.QueueDID(did)
+		}
 	}
-	if post != nil {
-		return // Already exists
-	}
+}
 
-	if lp.p.postFetcher != nil {
-		lp.p.postFetcher.QueueURI(postURI)
+// extractDIDFromURI extracts the DID from an AT-URI.
+// Example: "at://did:plc:xxx/app.bsky.actor.profile/self" -> "did:plc:xxx"
+func extractDIDFromURI(uri string) string {
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) >= 1 && strings.HasPrefix(parts[0], "did:") {
+		return parts[0]
 	}
+	return ""
 }
 
 func (lp *LabelProcessor) flushLabels() {

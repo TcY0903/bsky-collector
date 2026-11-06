@@ -13,12 +13,15 @@ import (
 	"bsky-collector/models"
 )
 
-const maxPostFetchConcurrent = 5
+const (
+	maxPostFetchConcurrent = 10
+	maxContextDepth        = 10
+)
 
 // PostFetcher fetches missing posts from the public API by URI.
 type PostFetcher struct {
 	p         *Processor
-	queue     chan string
+	queue     chan fetchTask
 	stopCh    chan struct{}
 	wg        sync.WaitGroup
 	started   bool
@@ -27,24 +30,29 @@ type PostFetcher struct {
 	ticker    *time.Ticker
 	client    *http.Client
 	sem       chan struct{}
+	pending   map[string]bool
 }
 
-// NewPostFetcher creates a new PostFetcher.
+type fetchTask struct {
+	URI   string
+	Depth int
+}
+
 func NewPostFetcher(p *Processor) *PostFetcher {
 	return &PostFetcher{
 		p:         p,
-		queue:     make(chan string, 5000),
+		queue:     make(chan fetchTask, 5000),
 		stopCh:    make(chan struct{}),
-		batchSize: 100,
+		batchSize: 10,
 		ticker:    time.NewTicker(3 * time.Second),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		sem: make(chan struct{}, maxPostFetchConcurrent),
+		sem:     make(chan struct{}, maxPostFetchConcurrent),
+		pending: make(map[string]bool),
 	}
 }
 
-// Start starts the fetcher worker.
 func (pf *PostFetcher) Start() {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
@@ -56,27 +64,56 @@ func (pf *PostFetcher) Start() {
 	go pf.worker()
 }
 
-// Stop stops the fetcher worker.
 func (pf *PostFetcher) Stop() {
 	pf.mu.Lock()
-	defer pf.mu.Unlock()
 	if !pf.started {
+		pf.mu.Unlock()
 		return
 	}
 	pf.started = false
 	close(pf.stopCh)
 	pf.ticker.Stop()
-	pf.wg.Wait()
+	pf.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		pf.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		pf.p.logger.Printf("WARN: PostFetcher stop timed out, forcing exit")
+	}
 }
 
-// QueueURI adds a post URI to the fetch queue.
 func (pf *PostFetcher) QueueURI(uri string) {
-	if uri == "" {
+	pf.QueueURIWithDepth(uri, 0)
+}
+
+func (pf *PostFetcher) QueueURIWithDepth(uri string, depth int) {
+	if uri == "" || depth > maxContextDepth {
 		return
 	}
+	if !strings.Contains(uri, "/app.bsky.feed.post/") {
+		return
+	}
+
+	pf.mu.Lock()
+	if pf.pending[uri] {
+		pf.mu.Unlock()
+		return
+	}
+	pf.pending[uri] = true
+	pf.mu.Unlock()
+
 	select {
-	case pf.queue <- uri:
+	case pf.queue <- fetchTask{URI: uri, Depth: depth}:
 	default:
+		pf.mu.Lock()
+		delete(pf.pending, uri)
+		pf.mu.Unlock()
 		pf.p.logger.Printf("WARN: post fetch queue full, skipping %s", uri)
 	}
 }
@@ -84,51 +121,59 @@ func (pf *PostFetcher) QueueURI(uri string) {
 func (pf *PostFetcher) worker() {
 	defer pf.wg.Done()
 
-	batch := make([]string, 0, pf.batchSize)
+	batch := make([]fetchTask, 0, pf.batchSize)
 	ticker := pf.ticker
 
 	for {
 		select {
 		case <-pf.stopCh:
-			if len(batch) > 0 {
-				pf.fetchBatch(batch)
-			}
 			return
-		case uri := <-pf.queue:
-			batch = append(batch, uri)
+		case task := <-pf.queue:
+			batch = append(batch, task)
 			if len(batch) >= pf.batchSize {
 				pf.fetchBatch(batch)
-				batch = make([]string, 0, pf.batchSize)
+				batch = make([]fetchTask, 0, pf.batchSize)
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				pf.fetchBatch(batch)
-				batch = make([]string, 0, pf.batchSize)
+				batch = make([]fetchTask, 0, pf.batchSize)
 			}
 		}
 	}
 }
 
-func (pf *PostFetcher) fetchBatch(uris []string) {
-	var wg sync.WaitGroup
-	for _, uri := range uris {
-		wg.Add(1)
-		go func(u string) {
-			defer wg.Done()
-			pf.sem <- struct{}{}
-			defer func() { <-pf.sem }()
-			pf.fetchPost(u)
-		}(uri)
+func (pf *PostFetcher) fetchBatch(tasks []fetchTask) {
+	for _, task := range tasks {
+		select {
+		case <-pf.stopCh:
+			return
+		default:
+		}
+		go func(t fetchTask) {
+			select {
+			case pf.sem <- struct{}{}:
+				defer func() { <-pf.sem }()
+			case <-pf.stopCh:
+				pf.mu.Lock()
+				delete(pf.pending, t.URI)
+				pf.mu.Unlock()
+				return
+			}
+			pf.fetchPost(t.URI, t.Depth)
+		}(task)
 	}
-	wg.Wait()
 }
 
-// fetchPost fetches a single post by URI via com.atproto.repo.getRecord.
-func (pf *PostFetcher) fetchPost(postURI string) {
-	// Parse URI: at://did/collection/rkey
+func (pf *PostFetcher) fetchPost(postURI string, depth int) {
+	defer func() {
+		pf.mu.Lock()
+		delete(pf.pending, postURI)
+		pf.mu.Unlock()
+	}()
+
 	parts := strings.Split(strings.TrimPrefix(postURI, "at://"), "/")
 	if len(parts) != 3 {
-		pf.p.logger.Printf("WARN: invalid post URI: %s", postURI)
 		return
 	}
 	repo := parts[0]
@@ -136,7 +181,7 @@ func (pf *PostFetcher) fetchPost(postURI string) {
 	rkey := parts[2]
 
 	if collection != "app.bsky.feed.post" {
-		return // Not a post
+		return
 	}
 
 	apiURL := fmt.Sprintf(
@@ -159,6 +204,9 @@ func (pf *PostFetcher) fetchPost(postURI string) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		pf.p.logger.Printf("WARN: post API returned %d for %s", resp.StatusCode, postURI)
 		return
@@ -209,12 +257,17 @@ func (pf *PostFetcher) fetchPost(postURI string) {
 		post.ReplyRoot = sanitizeText(result.Value.Reply.Root.URI)
 	}
 
-	// Parse embed (media) using existing MediaParser
+	// Parse embed (media + quoted post)
+	var quotedURI string
 	if len(result.Value.Embed) > 0 {
 		var embedVal interface{}
 		if err := json.Unmarshal(result.Value.Embed, &embedVal); err == nil {
 			if mediaData := pf.p.postProcessor.mediaParser.ParseEmbed(embedVal, repo); mediaData != nil {
 				post.Media = mediaData
+			}
+			// Extract quoted post URI
+			if embedMap, ok := embedVal.(map[string]interface{}); ok {
+				quotedURI = extractQuotedPostURI(embedMap)
 			}
 		}
 	}
@@ -224,10 +277,59 @@ func (pf *PostFetcher) fetchPost(postURI string) {
 		return
 	}
 
-	pf.p.logger.Printf("Fetched missing post: %s", postURI)
+	/*
+		if depth > 0 {
+			pf.p.logger.Printf("Fetched context post (depth=%d): %s", depth, postURI)
+		} else {
+			pf.p.logger.Printf("Fetched missing post: %s", postURI)
+		}
+	*/
 
-	// Queue actor for fetching
+	// Queue actor
 	if pf.p.actorFetcher != nil {
 		pf.p.actorFetcher.QueueDID(repo)
 	}
+
+	// Recursive: fetch parent chain
+	if post.ReplyParent != "" && depth < maxContextDepth {
+		pf.QueueURIWithDepth(post.ReplyParent, depth+1)
+	}
+
+	// Fetch root (if different from parent)
+	if post.ReplyRoot != "" && post.ReplyRoot != post.ReplyParent && depth < maxContextDepth {
+		pf.QueueURIWithDepth(post.ReplyRoot, depth+1)
+	}
+
+	// Fetch quoted post (not part of reply chain, depth 0)
+	if quotedURI != "" {
+		pf.QueueURIWithDepth(quotedURI, 0)
+	}
+}
+
+// extractQuotedPostURI extracts the quoted post URI from an embed structure.
+func extractQuotedPostURI(embed map[string]interface{}) string {
+	embedType, _ := embed["$type"].(string)
+
+	switch {
+	case embedType == "app.bsky.embed.record" || embedType == "app.bsky.embed.record#view":
+		if record, ok := embed["record"].(map[string]interface{}); ok {
+			if uri, ok := record["uri"].(string); ok && strings.Contains(uri, "/app.bsky.feed.post/") {
+				return uri
+			}
+		}
+	case embedType == "app.bsky.embed.recordWithMedia" || embedType == "app.bsky.embed.recordWithMedia#view":
+		if record, ok := embed["record"].(map[string]interface{}); ok {
+			// Try direct uri
+			if uri, ok := record["uri"].(string); ok && strings.Contains(uri, "/app.bsky.feed.post/") {
+				return uri
+			}
+			// Try nested record.uri
+			if innerRecord, ok := record["record"].(map[string]interface{}); ok {
+				if uri, ok := innerRecord["uri"].(string); ok && strings.Contains(uri, "/app.bsky.feed.post/") {
+					return uri
+				}
+			}
+		}
+	}
+	return ""
 }
