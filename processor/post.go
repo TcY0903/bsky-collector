@@ -424,24 +424,6 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 		return
 	}
 
-	// Trigger context fetching for reply chain + quoted posts
-	if pp.p.postFetcher != nil {
-		for _, post := range batch {
-			// Parent (reply chain, depth 1)
-			if post.ReplyParent != "" {
-				pp.p.postFetcher.QueueURIWithDepth(post.ReplyParent, 1)
-			}
-			// Root (if different from parent, depth 1)
-			if post.ReplyRoot != "" && post.ReplyRoot != post.ReplyParent {
-				pp.p.postFetcher.QueueURIWithDepth(post.ReplyRoot, 1)
-			}
-			// Quoted post (from stored media JSON, depth 0)
-			if quotedURI := extractQuotedPostFromMedia(post.Media); quotedURI != "" {
-				pp.p.postFetcher.QueueURIWithDepth(quotedURI, 0)
-			}
-		}
-	}
-
 	// Queue actors
 	if pp.p.actorFetcher != nil {
 		needActor := make([]*models.Post, 0)
@@ -454,32 +436,6 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 			pp.p.actorFetcher.QueueActorsForPosts(needActor)
 		}
 	}
-}
-
-// extractQuotedPostFromMedia extracts the quoted post URI from a stored media JSON.
-func extractQuotedPostFromMedia(media []byte) string {
-	if len(media) == 0 {
-		return ""
-	}
-
-	var mediaData map[string]interface{}
-	if err := json.Unmarshal(media, &mediaData); err != nil {
-		return ""
-	}
-
-	if record, ok := mediaData["record"].(map[string]interface{}); ok {
-		// Direct record
-		if uri, ok := record["uri"].(string); ok && strings.Contains(uri, "/app.bsky.feed.post/") {
-			return uri
-		}
-		// Nested: recordWithMedia.record.record.uri
-		if innerRecord, ok := record["record"].(map[string]interface{}); ok {
-			if uri, ok := innerRecord["uri"].(string); ok && strings.Contains(uri, "/app.bsky.feed.post/") {
-				return uri
-			}
-		}
-	}
-	return ""
 }
 
 // flushDeletes flushes pending delete batch.

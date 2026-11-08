@@ -118,6 +118,7 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 		}
 		batch = append(batch, label)
 
+		// Ensure the target of this label exists (post thread context or actor)
 		if !label.Neg {
 			lp.ensureTargetExists(label.URI)
 		}
@@ -139,18 +140,14 @@ func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	return nil
 }
 
-// ensureTargetExists checks if the target of a label exists locally,
-// and fetches it if missing. Handles both posts and actor profiles.
+// ensureTargetExists fetches the labeled content's context.
+//   - Post: fetch full thread context via getPostThread (regardless of local existence)
+//   - Profile: fetch actor
 func (lp *LabelProcessor) ensureTargetExists(uri string) {
 	switch {
 	case strings.Contains(uri, "/app.bsky.feed.post/"):
-		post, err := lp.p.db.GetPostByURI(uri)
-		if err != nil {
-			lp.p.logger.Printf("WARN: failed to check post existence %s: %v", uri, err)
-			return
-		}
-		if post == nil && lp.p.postFetcher != nil {
-			lp.p.postFetcher.QueueURI(uri)
+		if lp.p.postFetcher != nil {
+			lp.p.postFetcher.FetchThreadContext(uri)
 		}
 	case strings.Contains(uri, "/app.bsky.actor.profile/"):
 		did := extractDIDFromURI(uri)
