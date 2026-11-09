@@ -13,32 +13,34 @@ import (
 	"bsky-collector/models"
 )
 
+// ==================== Types ====================
+
 // ListFetcher handles fetching list information via the API.
 type ListFetcher struct {
-	p         *Processor
-	queue     chan string
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	started   bool
-	mu        sync.Mutex
-	batchSize int
-	ticker    *time.Ticker
-	client    *http.Client
+	p       *Processor
+	queue   chan string
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+	started bool
+	mu      sync.Mutex
+	client  *http.Client
+
+	sem     chan struct{}
+	verbose bool
 }
+
+// ==================== Lifecycle ====================
 
 // NewListFetcher creates a new ListFetcher.
 func NewListFetcher(p *Processor) *ListFetcher {
-	lf := &ListFetcher{
-		p:         p,
-		queue:     make(chan string, 1000),
-		stopCh:    make(chan struct{}),
-		batchSize: 10,
-		ticker:    time.NewTicker(5 * time.Second),
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+	return &ListFetcher{
+		p:       p,
+		queue:   make(chan string, 1000),
+		stopCh:  make(chan struct{}),
+		client:  &http.Client{Timeout: 10 * time.Second},
+		sem:     make(chan struct{}, 5),
+		verbose: p.cfg.ListFetcherVerbose,
 	}
-	return lf
 }
 
 // Start starts the ListFetcher worker.
@@ -53,18 +55,31 @@ func (lf *ListFetcher) Start() {
 	go lf.worker()
 }
 
-// Stop stops the ListFetcher worker.
+// Stop stops the ListFetcher worker with a timeout.
 func (lf *ListFetcher) Stop() {
 	lf.mu.Lock()
-	defer lf.mu.Unlock()
 	if !lf.started {
+		lf.mu.Unlock()
 		return
 	}
 	lf.started = false
 	close(lf.stopCh)
-	lf.ticker.Stop()
-	lf.wg.Wait()
+	lf.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		lf.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		lf.p.logger.Printf("WARN: ListFetcher stop timed out, forcing exit")
+	}
 }
+
+// ==================== Public API ====================
 
 // QueueListURI adds a list URI to the fetch queue.
 func (lf *ListFetcher) QueueListURI(uri string) {
@@ -74,110 +89,163 @@ func (lf *ListFetcher) QueueListURI(uri string) {
 	select {
 	case lf.queue <- uri:
 	default:
-		lf.p.logger.Printf("⚠️ List queue full, skipping %s", uri)
+		lf.warnf("WARN: list queue full, skipping %s", uri)
 	}
 }
+
+// ==================== Logging ====================
+
+func (lf *ListFetcher) logf(format string, args ...interface{}) {
+	if lf.verbose {
+		lf.p.logger.Printf(format, args...)
+	}
+}
+
+func (lf *ListFetcher) warnf(format string, args ...interface{}) {
+	lf.p.logger.Printf(format, args...)
+}
+
+// ==================== Worker ====================
 
 func (lf *ListFetcher) worker() {
 	defer lf.wg.Done()
 
-	batch := make([]string, 0, lf.batchSize)
-	ticker := lf.ticker
-
 	for {
 		select {
 		case <-lf.stopCh:
-			if len(batch) > 0 {
-				lf.fetchBatch(batch)
-			}
 			return
 		case uri := <-lf.queue:
-			batch = append(batch, uri)
-			if len(batch) >= lf.batchSize {
-				lf.fetchBatch(batch)
-				batch = make([]string, 0, lf.batchSize)
-			}
-		case <-ticker.C:
-			if len(batch) > 0 {
-				lf.fetchBatch(batch)
-				batch = make([]string, 0, lf.batchSize)
-			}
+			go func(u string) {
+				select {
+				case lf.sem <- struct{}{}:
+					defer func() { <-lf.sem }()
+				case <-lf.stopCh:
+					return
+				}
+				lf.fetchList(u)
+			}(uri)
 		}
 	}
 }
 
-func (lf *ListFetcher) fetchBatch(uris []string) {
-	if len(uris) == 0 {
-		return
-	}
-	for _, uri := range uris {
-		lf.fetchList(uri)
-	}
-}
+// ==================== Fetch ====================
 
-// fetchList fetches a single list via the API and saves it along with its members.
+// fetchList fetches a single list via the API (with pagination) and saves
+// the list metadata plus all its members.
 func (lf *ListFetcher) fetchList(listURI string) {
-	// Parse the URI to extract rkey
-	// Format: at://did:plc:xxx/app.bsky.graph.list/rkey
-	parts := strings.Split(strings.TrimPrefix(listURI, "at://"), "/")
-	if len(parts) < 3 {
-		lf.p.logger.Printf("⚠️ Invalid list URI: %s", listURI)
-		return
-	}
-	rkey := parts[len(parts)-1]
-
-	// Build API URL
-	apiURL := fmt.Sprintf("https://public.api.bsky.app/xrpc/app.bsky.graph.getList?list=%s", url.QueryEscape(listURI))
-
-	req, err := http.NewRequestWithContext(lf.p.ctx, "GET", apiURL, nil)
-	if err != nil {
-		lf.p.logger.Printf("⚠️ Failed to create list request: %v", err)
+	_, rkey, ok := parseListURI(listURI)
+	if !ok {
+		lf.warnf("WARN: invalid list URI: %s", listURI)
 		return
 	}
 
-	resp, err := lf.client.Do(req)
-	if err != nil {
-		if lf.p.ctx.Err() == context.Canceled {
-			lf.p.logger.Printf("⚠️ List request cancelled (shutdown)")
-		} else {
-			lf.p.logger.Printf("⚠️ Failed to fetch list %s: %v", listURI, err)
+	var (
+		cursor     string
+		totalItems int
+		list       *models.List
+		page       int
+	)
+
+	for {
+		page++
+
+		apiURL := fmt.Sprintf(
+			"https://public.api.bsky.app/xrpc/app.bsky.graph.getList?list=%s&limit=100",
+			url.QueryEscape(listURI),
+		)
+		if cursor != "" {
+			apiURL += "&cursor=" + url.QueryEscape(cursor)
 		}
-		return
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		lf.p.logger.Printf("⚠️ List API returned status %d for %s", resp.StatusCode, listURI)
-		return
+		req, err := http.NewRequestWithContext(lf.p.ctx, "GET", apiURL, nil)
+		if err != nil {
+			return
+		}
+		resp, err := lf.client.Do(req)
+		if err != nil {
+			if lf.p.ctx.Err() == context.Canceled {
+				return
+			}
+			lf.warnf("WARN: failed to fetch list %s (page %d): %v", listURI, page, err)
+			return
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lf.warnf("WARN: list API returned %d for %s (page %d)", resp.StatusCode, listURI, page)
+			return
+		}
+
+		var result listAPIResponse
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if err != nil {
+			lf.warnf("WARN: failed to decode list response for %s (page %d): %v", listURI, page, err)
+			return
+		}
+
+		// First page: save list metadata
+		if list == nil {
+			list = lf.buildList(rkey, &result)
+			if err := lf.p.db.SaveList(list); err != nil {
+				lf.warnf("WARN: failed to save list %s: %v", list.URI, err)
+				return
+			}
+			lf.logf("Fetched list: %s (creator: %s)", list.Name, list.DID)
+
+			if lf.p.actorFetcher != nil {
+				lf.p.actorFetcher.QueueDID(list.DID)
+			}
+		}
+
+		// Save this page's items
+		if len(result.Items) > 0 {
+			lf.saveListItems(list, result.Items)
+			totalItems += len(result.Items)
+			lf.logf("Page %d: saved %d list items (running total: %d)", page, len(result.Items), totalItems)
+		}
+
+		// Termination: no cursor or empty page
+		if result.Cursor == nil || *result.Cursor == "" {
+			break
+		}
+		if len(result.Items) == 0 {
+			break
+		}
+		cursor = *result.Cursor
 	}
 
-	var result struct {
-		List struct {
-			URI         string `json:"uri"`
-			CID         string `json:"cid"`
-			Name        string `json:"name"`
-			Purpose     string `json:"purpose"`
-			Description string `json:"description"`
-			Creator     struct {
-				DID string `json:"did"`
-			} `json:"creator"`
-			CreatedAt string `json:"createdAt"`
-		} `json:"list"`
-		Items []struct {
-			URI     string `json:"uri"`
-			Subject struct {
-				DID string `json:"did"`
-			} `json:"subject"`
-			CreatedAt string `json:"createdAt"`
-		} `json:"items"`
+	if list != nil {
+		lf.logf("Finished list %s: %s (creator: %s, total members: %d)",
+			list.URI, list.Name, list.DID, totalItems)
 	}
+}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		lf.p.logger.Printf("⚠️ Failed to decode list response: %v", err)
-		return
-	}
+// ==================== Build Helpers ====================
 
-	// Save the list with sanitized text fields
+type listAPIResponse struct {
+	List struct {
+		URI         string `json:"uri"`
+		CID         string `json:"cid"`
+		Name        string `json:"name"`
+		Purpose     string `json:"purpose"`
+		Description string `json:"description"`
+		Creator     struct {
+			DID string `json:"did"`
+		} `json:"creator"`
+		CreatedAt string `json:"createdAt"`
+	} `json:"list"`
+	Items []struct {
+		URI     string `json:"uri"`
+		Subject struct {
+			DID string `json:"did"`
+		} `json:"subject"`
+		CreatedAt string `json:"createdAt"`
+	} `json:"items"`
+	Cursor *string `json:"cursor,omitempty"`
+}
+
+func (lf *ListFetcher) buildList(rkey string, result *listAPIResponse) *models.List {
 	list := &models.List{
 		URI:         result.List.URI,
 		DID:         result.List.Creator.DID,
@@ -189,65 +257,66 @@ func (lf *ListFetcher) fetchList(listURI string) {
 		ReceivedAt:  time.Now().UTC(),
 		Status:      "active",
 	}
-
 	if t, err := time.Parse(time.RFC3339, result.List.CreatedAt); err == nil {
 		list.CreatedAt = t.UTC()
 	}
+	return list
+}
 
-	if err := lf.p.db.SaveList(list); err != nil {
-		lf.p.logger.Printf("⚠️ Failed to save list %s: %v", list.URI, err)
+func (lf *ListFetcher) saveListItems(list *models.List, items []struct {
+	URI     string `json:"uri"`
+	Subject struct {
+		DID string `json:"did"`
+	} `json:"subject"`
+	CreatedAt string `json:"createdAt"`
+}) {
+	if len(items) == 0 {
 		return
 	}
-	// lf.p.logger.Printf("📋 Fetched list via API: %s (creator: %s, members: %d)", list.Name, list.DID, len(result.Items))
 
-	// Queue the creator for actor fetching
-	if lf.p.actorFetcher != nil {
-		lf.p.actorFetcher.QueueDID(list.DID)
-	}
-
-	// Save all list items and queue their subjects for actor fetching
-	if len(result.Items) > 0 {
-		listItems := make([]*models.ListItem, 0, len(result.Items))
-		for _, item := range result.Items {
-			if item.Subject.DID == "" {
-				continue
-			}
-
-			// Parse the URI to extract rkey
-			itemParts := strings.Split(strings.TrimPrefix(item.URI, "at://"), "/")
-			itemRkey := ""
-			if len(itemParts) >= 3 {
-				itemRkey = itemParts[len(itemParts)-1]
-			}
-
-			listItem := &models.ListItem{
-				URI:        item.URI,
-				ListURI:    list.URI,
-				DID:        list.DID,
-				SubjectDID: item.Subject.DID,
-				RKey:       itemRkey,
-				ReceivedAt: time.Now().UTC(),
-				Status:     "active",
-			}
-
-			if t, err := time.Parse(time.RFC3339, item.CreatedAt); err == nil {
-				listItem.CreatedAt = t.UTC()
-			}
-
-			listItems = append(listItems, listItem)
-
-			// Queue the member for actor fetching
-			if lf.p.actorFetcher != nil {
-				lf.p.actorFetcher.QueueDID(item.Subject.DID)
-			}
+	listItems := make([]*models.ListItem, 0, len(items))
+	for _, item := range items {
+		if item.Subject.DID == "" {
+			continue
 		}
 
-		if len(listItems) > 0 {
-			if err := lf.p.db.SaveListItemsBatch(listItems); err != nil {
-				lf.p.logger.Printf("⚠️ Failed to save %d list items for %s: %v", len(listItems), list.URI, err)
-			} else {
-				// lf.p.logger.Printf("👥 Saved %d list items for list: %s", len(listItems), list.Name)
-			}
+		_, itemRkey, _ := parseListURI(item.URI)
+
+		listItem := &models.ListItem{
+			URI:        item.URI,
+			ListURI:    list.URI,
+			DID:        list.DID,
+			SubjectDID: item.Subject.DID,
+			RKey:       itemRkey,
+			ReceivedAt: time.Now().UTC(),
+			Status:     "active",
+		}
+
+		if t, err := time.Parse(time.RFC3339, item.CreatedAt); err == nil {
+			listItem.CreatedAt = t.UTC()
+		}
+
+		listItems = append(listItems, listItem)
+
+		if lf.p.actorFetcher != nil {
+			lf.p.actorFetcher.QueueDID(item.Subject.DID)
 		}
 	}
+
+	if len(listItems) > 0 {
+		if err := lf.p.db.SaveListItemsBatch(listItems); err != nil {
+			lf.warnf("WARN: failed to save %d list items for %s: %v", len(listItems), list.URI, err)
+		}
+	}
+}
+
+// ==================== URI Helpers ====================
+
+// parseListURI parses "at://did/collection/rkey" into (repo, rkey, ok).
+func parseListURI(uri string) (repo, rkey string, ok bool) {
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) < 3 {
+		return "", "", false
+	}
+	return parts[0], parts[len(parts)-1], true
 }

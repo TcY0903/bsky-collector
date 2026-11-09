@@ -12,9 +12,16 @@ import (
 	"bsky-collector/models"
 )
 
+const (
+	actorBatchSize = 25 // API limit for getProfiles
+	actorTickerSec = 3
+)
+
 var (
 	didRegexp = regexp.MustCompile(`^did:plc:[a-zA-Z0-9]{24}$`)
 )
+
+// ==================== Types ====================
 
 // ActorFetcher handles fetching actor profiles via the batch API.
 type ActorFetcher struct {
@@ -27,21 +34,22 @@ type ActorFetcher struct {
 	batchSize int
 	ticker    *time.Ticker
 	client    *http.Client
+	verbose   bool
 }
+
+// ==================== Lifecycle ====================
 
 // NewActorFetcher creates a new ActorFetcher.
 func NewActorFetcher(p *Processor) *ActorFetcher {
-	af := &ActorFetcher{
+	return &ActorFetcher{
 		p:         p,
 		queue:     make(chan string, 5000),
 		stopCh:    make(chan struct{}),
-		batchSize: 25,
-		ticker:    time.NewTicker(3 * time.Second),
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		batchSize: actorBatchSize,
+		ticker:    time.NewTicker(actorTickerSec * time.Second),
+		client:    &http.Client{Timeout: 10 * time.Second},
+		verbose:   p.cfg.ActorFetcherVerbose,
 	}
-	return af
 }
 
 // Start starts the ActorFetcher worker.
@@ -56,26 +64,40 @@ func (af *ActorFetcher) Start() {
 	go af.worker()
 }
 
-// Stop stops the ActorFetcher worker.
+// Stop stops the ActorFetcher worker with a timeout.
 func (af *ActorFetcher) Stop() {
 	af.mu.Lock()
-	defer af.mu.Unlock()
 	if !af.started {
+		af.mu.Unlock()
 		return
 	}
 	af.started = false
 	close(af.stopCh)
 	af.ticker.Stop()
-	af.wg.Wait()
+	af.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		af.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		af.p.logger.Printf("WARN: ActorFetcher stop timed out, forcing exit")
+	}
 }
 
-// QueueDID adds a DID to the fetch queue (with database existence check).
+// ==================== Public API ====================
+
+// QueueDID adds a DID to the fetch queue.
 func (af *ActorFetcher) QueueDID(did string) {
 	if did == "" || !didRegexp.MatchString(did) {
 		return
 	}
 
-	// Check if actor already exists in DB
+	// Skip if actor already exists in DB
 	exists, _ := af.p.db.ActorExists(did)
 	if exists {
 		return
@@ -84,7 +106,7 @@ func (af *ActorFetcher) QueueDID(did string) {
 	select {
 	case af.queue <- did:
 	default:
-		af.p.logger.Printf("⚠️ Actor queue full, skipping %s", did)
+		af.warnf("WARN: actor queue full, skipping %s", did)
 	}
 }
 
@@ -97,26 +119,36 @@ func (af *ActorFetcher) QueueActorsForPosts(posts []*models.Post) {
 	}
 }
 
+// ==================== Logging ====================
+
+func (af *ActorFetcher) logf(format string, args ...interface{}) {
+	if af.verbose {
+		af.p.logger.Printf(format, args...)
+	}
+}
+
+func (af *ActorFetcher) warnf(format string, args ...interface{}) {
+	af.p.logger.Printf(format, args...)
+}
+
+// ==================== Worker ====================
+
 func (af *ActorFetcher) worker() {
 	defer af.wg.Done()
 
 	batch := make([]string, 0, af.batchSize)
-	ticker := af.ticker
 
 	for {
 		select {
 		case <-af.stopCh:
-			// 关闭时直接退出，不处理剩余 batch
 			return
-
 		case did := <-af.queue:
 			batch = append(batch, did)
 			if len(batch) >= af.batchSize {
 				af.fetchBatch(batch)
 				batch = make([]string, 0, af.batchSize)
 			}
-
-		case <-ticker.C:
+		case <-af.ticker.C:
 			if len(batch) > 0 {
 				af.fetchBatch(batch)
 				batch = make([]string, 0, af.batchSize)
@@ -125,8 +157,10 @@ func (af *ActorFetcher) worker() {
 	}
 }
 
+// ==================== Fetch ====================
+
 func (af *ActorFetcher) fetchBatch(dids []string) {
-	validDIDs := []string{}
+	validDIDs := make([]string, 0, len(dids))
 	for _, did := range dids {
 		if didRegexp.MatchString(did) {
 			validDIDs = append(validDIDs, did)
@@ -144,23 +178,22 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 
 	req, err := http.NewRequestWithContext(af.p.ctx, "GET", reqURL, nil)
 	if err != nil {
-		af.p.logger.Printf("⚠️ Failed to create actor request: %v", err)
+		af.warnf("WARN: failed to create actor request: %v", err)
 		return
 	}
 
 	resp, err := af.client.Do(req)
 	if err != nil {
 		if af.p.ctx.Err() == context.Canceled {
-			af.p.logger.Printf("⚠️ Actor request cancelled (shutdown)")
-		} else {
-			af.p.logger.Printf("⚠️ Failed to fetch actors: %v", err)
+			return
 		}
+		af.warnf("WARN: failed to fetch actors: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		af.p.logger.Printf("⚠️ Actor API returned status %d", resp.StatusCode)
+		af.warnf("WARN: actor API returned status %d", resp.StatusCode)
 		return
 	}
 
@@ -179,7 +212,7 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 		} `json:"profiles"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		af.p.logger.Printf("⚠️ Failed to decode actor response: %v", err)
+		af.warnf("WARN: failed to decode actor response: %v", err)
 		return
 	}
 
@@ -211,7 +244,9 @@ func (af *ActorFetcher) fetchBatch(dids []string) {
 
 	if len(actors) > 0 {
 		if err := af.p.db.SaveActorsBatch(actors); err != nil {
-			af.p.logger.Printf("⚠️ Failed to save %d actors: %v", len(actors), err)
+			af.warnf("WARN: failed to save %d actors: %v", len(actors), err)
+		} else {
+			af.logf("Saved %d actors", len(actors))
 		}
 	}
 }

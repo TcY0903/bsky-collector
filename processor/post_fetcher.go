@@ -13,15 +13,6 @@ import (
 	"bsky-collector/models"
 )
 
-// ==================== Constants ====================
-
-const (
-	maxPostFetchConcurrent = 5
-	maxContextDepth        = 10   // Fallback safety for recursive fetchPost
-	threadParentHeight     = 1000 // Max parent chain depth for getPostThread
-	threadReplyDepth       = 1000 // Max reply tree depth for getPostThread
-)
-
 // ==================== Types ====================
 
 // fetchTask describes a single fetch job.
@@ -33,34 +24,56 @@ type fetchTask struct {
 
 // PostFetcher fetches missing posts and thread context from the public API.
 type PostFetcher struct {
-	p         *Processor
-	queue     chan fetchTask
-	stopCh    chan struct{}
-	wg        sync.WaitGroup
-	started   bool
-	mu        sync.Mutex
-	batchSize int
-	ticker    *time.Ticker
-	client    *http.Client
-	sem       chan struct{}
-	pending   map[string]bool
+	p       *Processor
+	queue   chan fetchTask
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+	started bool
+	mu      sync.Mutex
+	client  *http.Client
+	sem     chan struct{}
+	pending map[string]bool
+
+	maxConcurrent      int
+	maxContextDepth    int
+	threadParentHeight int
+	threadReplyDepth   int
+	verbose            bool
 }
 
 // ==================== Lifecycle ====================
 
-// NewPostFetcher creates a new PostFetcher.
+// NewPostFetcher creates a new PostFetcher using processor config.
 func NewPostFetcher(p *Processor) *PostFetcher {
+	maxConcurrent := p.cfg.PostFetchMaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 5
+	}
+	maxContextDepth := p.cfg.PostFetchMaxContextDepth
+	if maxContextDepth <= 0 {
+		maxContextDepth = 10
+	}
+	threadParentHeight := p.cfg.ThreadParentHeight
+	if threadParentHeight <= 0 {
+		threadParentHeight = 1000
+	}
+	threadReplyDepth := p.cfg.ThreadReplyDepth
+	if threadReplyDepth <= 0 {
+		threadReplyDepth = 1000
+	}
+
 	return &PostFetcher{
-		p:         p,
-		queue:     make(chan fetchTask, 5000),
-		stopCh:    make(chan struct{}),
-		batchSize: 10,
-		ticker:    time.NewTicker(3 * time.Second),
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		sem:     make(chan struct{}, maxPostFetchConcurrent),
-		pending: make(map[string]bool),
+		p:                  p,
+		queue:              make(chan fetchTask, 5000),
+		stopCh:             make(chan struct{}),
+		client:             &http.Client{Timeout: 30 * time.Second},
+		sem:                make(chan struct{}, maxConcurrent),
+		pending:            make(map[string]bool),
+		maxConcurrent:      maxConcurrent,
+		maxContextDepth:    maxContextDepth,
+		threadParentHeight: threadParentHeight,
+		threadReplyDepth:   threadReplyDepth,
+		verbose:            p.cfg.PostFetcherVerbose,
 	}
 }
 
@@ -85,7 +98,6 @@ func (pf *PostFetcher) Stop() {
 	}
 	pf.started = false
 	close(pf.stopCh)
-	pf.ticker.Stop()
 	pf.mu.Unlock()
 
 	done := make(chan struct{})
@@ -103,17 +115,14 @@ func (pf *PostFetcher) Stop() {
 
 // ==================== Public API ====================
 
-// QueueURI queues a single post for fetching (no context).
 func (pf *PostFetcher) QueueURI(uri string) {
 	pf.enqueue(fetchTask{URI: uri, Depth: 0, Context: false})
 }
 
-// QueueURIWithDepth queues a single post for fetching with an explicit depth.
 func (pf *PostFetcher) QueueURIWithDepth(uri string, depth int) {
 	pf.enqueue(fetchTask{URI: uri, Depth: depth, Context: false})
 }
 
-// FetchThreadContext queues a post for full thread-context fetching via getPostThread.
 func (pf *PostFetcher) FetchThreadContext(uri string) {
 	pf.enqueue(fetchTask{URI: uri, Depth: 0, Context: true})
 }
@@ -124,7 +133,7 @@ func (pf *PostFetcher) enqueue(task fetchTask) {
 	if task.URI == "" || !strings.Contains(task.URI, "/app.bsky.feed.post/") {
 		return
 	}
-	if task.Depth > maxContextDepth {
+	if task.Depth > pf.maxContextDepth {
 		return
 	}
 
@@ -140,7 +149,7 @@ func (pf *PostFetcher) enqueue(task fetchTask) {
 	case pf.queue <- task:
 	default:
 		pf.clearPending(task.URI)
-		pf.p.logger.Printf("WARN: post fetch queue full, skipping %s", task.URI)
+		pf.warnf("WARN: post fetch queue full, skipping %s", task.URI)
 	}
 }
 
@@ -153,37 +162,18 @@ func (pf *PostFetcher) clearPending(uri string) {
 func (pf *PostFetcher) worker() {
 	defer pf.wg.Done()
 
-	batch := make([]fetchTask, 0, pf.batchSize)
-	ticker := pf.ticker
-
 	for {
 		select {
 		case <-pf.stopCh:
 			return
 		case task := <-pf.queue:
-			if task.Context {
-				pf.runAsync(task.URI, func() { pf.fetchThreadContext(task.URI) })
+			t := task
+			if t.Context {
+				pf.runAsync(t.URI, func() { pf.fetchThreadContext(t.URI) })
 			} else {
-				batch = append(batch, task)
-				if len(batch) >= pf.batchSize {
-					pf.dispatchBatch(batch)
-					batch = make([]fetchTask, 0, pf.batchSize)
-				}
-			}
-		case <-ticker.C:
-			if len(batch) > 0 {
-				pf.dispatchBatch(batch)
-				batch = make([]fetchTask, 0, pf.batchSize)
+				pf.runAsync(t.URI, func() { pf.fetchPost(t.URI, t.Depth) })
 			}
 		}
-	}
-}
-
-// dispatchBatch launches all tasks in a batch concurrently (bounded by sem).
-func (pf *PostFetcher) dispatchBatch(tasks []fetchTask) {
-	for _, task := range tasks {
-		t := task
-		pf.runAsync(t.URI, func() { pf.fetchPost(t.URI, t.Depth) })
 	}
 }
 
@@ -201,10 +191,20 @@ func (pf *PostFetcher) runAsync(uri string, fn func()) {
 	}()
 }
 
+// ==================== Logging ====================
+
+func (pf *PostFetcher) logf(format string, args ...interface{}) {
+	if pf.verbose {
+		pf.p.logger.Printf(format, args...)
+	}
+}
+
+func (pf *PostFetcher) warnf(format string, args ...interface{}) {
+	pf.p.logger.Printf(format, args...)
+}
+
 // ==================== HTTP Helper ====================
 
-// getJSON performs a GET request and decodes the JSON response into out.
-// Returns false on any failure (including 404/429/etc.).
 func (pf *PostFetcher) getJSON(apiURL string, out interface{}) bool {
 	req, err := http.NewRequestWithContext(pf.p.ctx, "GET", apiURL, nil)
 	if err != nil {
@@ -213,7 +213,7 @@ func (pf *PostFetcher) getJSON(apiURL string, out interface{}) bool {
 	resp, err := pf.client.Do(req)
 	if err != nil {
 		if pf.p.ctx.Err() != context.Canceled {
-			pf.p.logger.Printf("WARN: HTTP request failed for %s: %v", apiURL, err)
+			pf.warnf("WARN: HTTP request failed for %s: %v", apiURL, err)
 		}
 		return false
 	}
@@ -223,12 +223,12 @@ func (pf *PostFetcher) getJSON(apiURL string, out interface{}) bool {
 		return false
 	}
 	if resp.StatusCode != http.StatusOK {
-		pf.p.logger.Printf("WARN: HTTP %d for %s", resp.StatusCode, apiURL)
+		pf.warnf("WARN: HTTP %d for %s", resp.StatusCode, apiURL)
 		return false
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		pf.p.logger.Printf("WARN: failed to decode response for %s: %v", apiURL, err)
+		pf.warnf("WARN: failed to decode response for %s: %v", apiURL, err)
 		return false
 	}
 	return true
@@ -263,8 +263,8 @@ func (pf *PostFetcher) fetchPost(postURI string, depth int) {
 		return
 	}
 
-	post := pf.buildPostFromRecord(repo, rkey, result.URI, result.CID, result.Value.Text,
-		result.Value.CreatedAt, result.Value.Reply, result.Value.Embed)
+	post := pf.buildPostFromRecord(repo, rkey, result.URI, result.CID,
+		result.Value.Text, result.Value.CreatedAt, result.Value.Reply, result.Value.Embed)
 	if post == nil {
 		return
 	}
@@ -275,25 +275,24 @@ func (pf *PostFetcher) fetchPost(postURI string, depth int) {
 	}
 
 	if err := pf.p.db.SavePost(post); err != nil {
-		pf.p.logger.Printf("WARN: failed to save fetched post %s: %v", postURI, err)
+		pf.warnf("WARN: failed to save fetched post %s: %v", postURI, err)
 		return
 	}
 
 	if depth > 0 {
-		pf.p.logger.Printf("Fetched context post (depth=%d): %s", depth, postURI)
+		pf.logf("Fetched context post (depth=%d): %s", depth, postURI)
 	} else {
-		pf.p.logger.Printf("Fetched missing post: %s", postURI)
+		pf.logf("Fetched missing post: %s", postURI)
 	}
 
 	if pf.p.actorFetcher != nil {
 		pf.p.actorFetcher.QueueDID(repo)
 	}
 
-	// Recursively fetch parent chain (fallback path)
-	if post.ReplyParent != "" && depth < maxContextDepth {
+	if post.ReplyParent != "" && depth < pf.maxContextDepth {
 		pf.QueueURIWithDepth(post.ReplyParent, depth+1)
 	}
-	if post.ReplyRoot != "" && post.ReplyRoot != post.ReplyParent && depth < maxContextDepth {
+	if post.ReplyRoot != "" && post.ReplyRoot != post.ReplyParent && depth < pf.maxContextDepth {
 		pf.QueueURIWithDepth(post.ReplyRoot, depth+1)
 	}
 	if quotedURI != "" {
@@ -306,11 +305,11 @@ func (pf *PostFetcher) fetchPost(postURI string, depth int) {
 func (pf *PostFetcher) fetchThreadContext(postURI string) {
 	defer pf.clearPending(postURI)
 
-	pf.p.logger.Printf("Fetching thread context for: %s", postURI)
+	pf.logf("Fetching thread context for: %s", postURI)
 
 	apiURL := fmt.Sprintf(
 		"https://public.api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=%s&depth=%d&parentHeight=%d",
-		url.QueryEscape(postURI), threadReplyDepth, threadParentHeight,
+		url.QueryEscape(postURI), pf.threadReplyDepth, pf.threadParentHeight,
 	)
 
 	var result struct {
@@ -326,15 +325,14 @@ func (pf *PostFetcher) fetchThreadContext(postURI string) {
 	}
 
 	if tv.Type != "app.bsky.feed.defs#threadViewPost" {
-		pf.p.logger.Printf("Thread context not found (type=%s) for: %s", tv.Type, postURI)
+		pf.logf("Thread context not found (type=%s) for: %s", tv.Type, postURI)
 		return
 	}
 
 	visited := make(map[string]bool)
 
-	// Target post
 	if len(tv.Post) > 0 {
-		pf.saveThreadPostView(tv.Post, 0, postURI, visited)
+		pf.saveThreadPostView(tv.Post, 0, "target", postURI, visited)
 	}
 
 	// Parent chain (upward)
@@ -346,7 +344,6 @@ func (pf *PostFetcher) fetchThreadContext(postURI string) {
 	}
 }
 
-// threadViewNode is a unified struct for both parent and reply nodes.
 type threadViewNode struct {
 	Type    string            `json:"$type"`
 	Post    json.RawMessage   `json:"post"`
@@ -354,9 +351,8 @@ type threadViewNode struct {
 	Replies []json.RawMessage `json:"replies"`
 }
 
-// walkParentChain recursively saves parent posts (upward).
 func (pf *PostFetcher) walkParentChain(raw json.RawMessage, depth int, visited map[string]bool) {
-	if len(raw) == 0 || depth > threadParentHeight {
+	if len(raw) == 0 || depth > pf.threadParentHeight {
 		return
 	}
 	var node threadViewNode
@@ -367,14 +363,13 @@ func (pf *PostFetcher) walkParentChain(raw json.RawMessage, depth int, visited m
 		return
 	}
 	if len(node.Post) > 0 {
-		pf.saveThreadPostView(node.Post, depth, "", visited)
+		pf.saveThreadPostView(node.Post, depth, "parent", "", visited)
 	}
 	pf.walkParentChain(node.Parent, depth+1, visited)
 }
 
-// walkReplies recursively saves reply posts (downward).
 func (pf *PostFetcher) walkReplies(raw json.RawMessage, depth int, visited map[string]bool) {
-	if len(raw) == 0 || depth > threadReplyDepth {
+	if len(raw) == 0 || depth > pf.threadReplyDepth {
 		return
 	}
 	var node threadViewNode
@@ -385,15 +380,14 @@ func (pf *PostFetcher) walkReplies(raw json.RawMessage, depth int, visited map[s
 		return
 	}
 	if len(node.Post) > 0 {
-		pf.saveThreadPostView(node.Post, depth, "", visited)
+		pf.saveThreadPostView(node.Post, depth, "reply", "", visited)
 	}
 	for _, child := range node.Replies {
 		pf.walkReplies(child, depth+1, visited)
 	}
 }
 
-// saveThreadPostView parses and saves a threadViewPost.post object.
-func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, expectedURI string, visited map[string]bool) {
+func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, kind, expectedURI string, visited map[string]bool) {
 	var pv struct {
 		URI    string `json:"uri"`
 		CID    string `json:"cid"`
@@ -403,7 +397,7 @@ func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, expect
 		Record struct {
 			Text      string          `json:"text"`
 			CreatedAt string          `json:"createdAt"`
-			Reply     *replyRef       `json:"reply"` // ← 改成 *replyRef
+			Reply     *replyRef       `json:"reply"`
 			Embed     json.RawMessage `json:"embed"`
 		} `json:"record"`
 	}
@@ -414,13 +408,11 @@ func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, expect
 		return
 	}
 
-	// Per-request dedup
 	if visited[pv.URI] {
 		return
 	}
 	visited[pv.URI] = true
 
-	// DB dedup (except explicit target)
 	if expectedURI == "" || pv.URI != expectedURI {
 		if existing, _ := pf.p.db.GetPostByURI(pv.URI); existing != nil {
 			return
@@ -439,14 +431,17 @@ func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, expect
 	}
 
 	if err := pf.p.db.SavePost(post); err != nil {
-		pf.p.logger.Printf("WARN: failed to save context post %s: %v", pv.URI, err)
+		pf.warnf("WARN: failed to save context post %s: %v", pv.URI, err)
 		return
 	}
 
-	if depth > 0 {
-		pf.p.logger.Printf("Fetched thread context post (depth=%d): %s", depth, pv.URI)
-	} else if expectedURI != "" {
-		pf.p.logger.Printf("Fetched labeled post: %s", pv.URI)
+	switch kind {
+	case "target":
+		pf.logf("Fetched labeled post: %s", pv.URI)
+	case "parent":
+		pf.logf("Fetched parent post (depth=%d): %s", depth, pv.URI)
+	case "reply":
+		pf.logf("Fetched reply post (depth=%d): %s", depth, pv.URI)
 	}
 
 	if pf.p.actorFetcher != nil {
@@ -456,7 +451,6 @@ func (pf *PostFetcher) saveThreadPostView(raw json.RawMessage, depth int, expect
 
 // ==================== Build Helpers ====================
 
-// replyRef is the reply reference embedded in a post record.
 type replyRef struct {
 	Parent struct {
 		URI string `json:"uri"`
@@ -466,8 +460,6 @@ type replyRef struct {
 	} `json:"root"`
 }
 
-// buildPostFromRecord builds a models.Post from record fields.
-// Returns nil if the record is invalid.
 func (pf *PostFetcher) buildPostFromRecord(
 	did, rkey, uri, cid, text, createdAt string,
 	reply *replyRef,
@@ -505,7 +497,6 @@ func (pf *PostFetcher) buildPostFromRecord(
 
 // ==================== URI Helpers ====================
 
-// parsePostURI parses "at://did/collection/rkey" into (did, rkey).
 func parsePostURI(uri string) (did, rkey string, ok bool) {
 	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
 	if len(parts) != 3 || parts[1] != "app.bsky.feed.post" {
@@ -514,7 +505,6 @@ func parsePostURI(uri string) (did, rkey string, ok bool) {
 	return parts[0], parts[2], true
 }
 
-// extractQuotedPostURIFromRaw extracts the quoted post URI from a raw embed JSON.
 func extractQuotedPostURIFromRaw(embed json.RawMessage) string {
 	var embedMap map[string]interface{}
 	if err := json.Unmarshal(embed, &embedMap); err != nil {
@@ -523,7 +513,6 @@ func extractQuotedPostURIFromRaw(embed json.RawMessage) string {
 	return extractQuotedPostURI(embedMap)
 }
 
-// extractQuotedPostURI extracts the quoted post URI from an embed map.
 func extractQuotedPostURI(embed map[string]interface{}) string {
 	embedType, _ := embed["$type"].(string)
 
