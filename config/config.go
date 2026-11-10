@@ -14,6 +14,10 @@ type Config struct {
 	DatabaseURL      string
 	StatsIntervalSec int
 
+	// Stats verbose switches
+	DBStatsVerbose       bool
+	FirehoseStatsVerbose bool
+
 	// Firehose
 	FirehoseURL              string
 	FirehoseEventChannelSize int
@@ -59,12 +63,16 @@ func Load() *Config {
 		DatabaseURL:      getEnv("DATABASE_URL", "postgres://username:password@localhost:5432/bsky_data?sslmode=disable"),
 		StatsIntervalSec: getEnvAsInt("STATS_INTERVAL_SEC", 10),
 
+		DBStatsVerbose:       getEnvAsBool("DB_STATS_VERBOSE", true),
+		FirehoseStatsVerbose: getEnvAsBool("FIREHOSE_STATS_VERBOSE", true),
+
 		FirehoseURL:              getEnv("FIREHOSE_URL", "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"),
 		FirehoseEventChannelSize: getEnvAsInt("FIREHOSE_EVENT_CHANNEL_SIZE", 10000),
 		FirehoseSchedulerWorkers: getEnvAsInt("FIREHOSE_SCHEDULER_WORKERS", 10),
 		FirehoseSchedulerQueue:   getEnvAsInt("FIREHOSE_SCHEDULER_QUEUE", 100),
 
-		LabelAggregatorFirehoseURL:        getEnv("LABEL_AGGREGATOR_FIREHOSE_URL", "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"),
+		LabelAggregatorFirehoseURL: getEnv("LABEL_AGGREGATOR_FIREHOSE_URL",
+			"wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"),
 		LabelAggregatorCSVPath:            getEnv("LABEL_AGGREGATOR_CSV_PATH", "labelers.csv"),
 		LabelAggregatorEventChannelSize:   getEnvAsInt("LABEL_AGGREGATOR_EVENT_CHANNEL_SIZE", 10000),
 		LabelAggregatorMaxConcurrent:      getEnvAsInt("LABEL_AGGREGATOR_MAX_CONCURRENT", 20),
