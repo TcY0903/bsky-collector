@@ -38,14 +38,14 @@ func main() {
 	}()
 
 	// Firehose client (for posts, blocks, lists)
-	firehoseClient := stream.NewFirehoseClient(logger)
+	firehoseClient := stream.NewFirehoseClient(cfg, logger)
 	go func() {
 		logger.Printf("🔌 Starting Firehose client with auto-reconnect...")
 		firehoseClient.StartWithRetry(ctx)
 	}()
 
 	// Label aggregator (connects directly to labelers)
-	labelAggregator := stream.NewLabelAggregator(logger, db, "labelers.csv")
+	labelAggregator := stream.NewLabelAggregator(cfg, logger, db)
 	go func() {
 		logger.Printf("🏷️ Starting label aggregator...")
 		labelAggregator.StartWithRetry(ctx)

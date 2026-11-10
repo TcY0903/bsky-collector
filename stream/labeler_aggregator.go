@@ -16,35 +16,59 @@ import (
 	"github.com/bluesky-social/indigo/events/schedulers/parallel"
 	"github.com/gorilla/websocket"
 
+	"bsky-collector/config"
 	"bsky-collector/models"
 	"bsky-collector/storage"
 )
 
-const (
-	labelFirehoseURL         = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
-	maxConcurrentConnections = 20
-	maxConnectPerTick        = 10
-	maxResolveFailures       = 3
-	maxConnectFailures       = 5
-)
+// ==================== Types ====================
 
 // LabelAggregator connects directly to many labelers and aggregates their streams.
 type LabelAggregator struct {
-	logger   *log.Logger
-	db       *storage.DB
-	csvPath  string
+	cfg    *config.Config
+	logger *log.Logger
+	db     *storage.DB
+
 	eventCh  chan []byte
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
 
-// NewLabelAggregator creates a new LabelAggregator.
-func NewLabelAggregator(logger *log.Logger, db *storage.DB, csvPath string) *LabelAggregator {
+// labelerState tracks the in-memory state of each labeler.
+type labelerState struct {
+	mu           sync.Mutex
+	labelers     map[string]bool
+	orderedDIDs  []string
+	resolveFails map[string]int
+	connectFails map[string]int
+	sem          chan struct{}
+}
+
+func newLabelerState(maxConcurrent int) *labelerState {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 20
+	}
+	return &labelerState{
+		labelers:     make(map[string]bool),
+		resolveFails: make(map[string]int),
+		connectFails: make(map[string]int),
+		sem:          make(chan struct{}, maxConcurrent),
+	}
+}
+
+// ==================== Lifecycle ====================
+
+// NewLabelAggregator creates a new LabelAggregator using config.
+func NewLabelAggregator(cfg *config.Config, logger *log.Logger, db *storage.DB) *LabelAggregator {
+	eventChannelSize := cfg.LabelAggregatorEventChannelSize
+	if eventChannelSize <= 0 {
+		eventChannelSize = 10000
+	}
 	return &LabelAggregator{
+		cfg:     cfg,
 		logger:  logger,
 		db:      db,
-		csvPath: csvPath,
-		eventCh: make(chan []byte, 10000),
+		eventCh: make(chan []byte, eventChannelSize),
 		stopCh:  make(chan struct{}),
 	}
 }
@@ -61,138 +85,137 @@ func (a *LabelAggregator) Close() {
 	})
 }
 
+// ==================== Startup ====================
+
 // StartWithRetry starts the aggregator and blocks until the context is cancelled.
 func (a *LabelAggregator) StartWithRetry(ctx context.Context) {
-	var (
-		mu           sync.Mutex
-		labelers     = make(map[string]bool)
-		orderedDIDs  []string
-		resolveFails = make(map[string]int)
-		connectFails = make(map[string]int)
-	)
+	st := newLabelerState(a.cfg.LabelAggregatorMaxConcurrent)
 
-	sem := make(chan struct{}, maxConcurrentConnections)
+	a.loadFromDatabase(st)
+	a.loadFromCSV(st)
 
-	// 1. Load labelers from database
-	dbLabelers, err := a.db.GetAllLabelers()
-	if err != nil {
-		a.logger.Printf("WARN: failed to load labelers from database: %v", err)
-	} else {
-		loaded := 0
-		skipped := 0
-		for _, l := range dbLabelers {
-			// Skip permanently failed labelers
-			if l.Status == "resolve_failed" {
-				skipped++
-				continue
-			}
-			labelers[l.DID] = false
-			orderedDIDs = append(orderedDIDs, l.DID)
-			loaded++
-		}
-		a.logger.Printf("Loaded %d labelers from database (%d skipped as resolve_failed)",
-			loaded, skipped)
-	}
+	a.logger.Printf("Starting with %d labelers in queue", len(st.orderedDIDs))
 
-	// 2. Load seed labelers from CSV
-	knownDIDs, err := loadKnownLabelers(a.csvPath)
-	if err != nil {
-		a.logger.Printf("WARN: failed to load seed labelers from %s: %v", a.csvPath, err)
-	} else {
-		added := 0
-		for _, did := range knownDIDs {
-			if _, exists := labelers[did]; exists {
-				continue
-			}
-			labelers[did] = false
-			orderedDIDs = append(orderedDIDs, did)
-			now := time.Now().UTC()
-			if err := a.db.SaveLabeler(&models.Labeler{
-				DID:       did,
-				Status:    "unknown",
-				FirstSeen: now,
-				UpdatedAt: now,
-			}); err != nil {
-				a.logger.Printf("WARN: failed to save seed labeler %s: %v", did, err)
-			}
-			added++
-		}
-		if added > 0 {
-			a.logger.Printf("Added %d new seed labelers from %s", added, a.csvPath)
-		}
-	}
+	// Firehose listener for discovery (with exponential backoff)
+	go a.runFirehoseListener(ctx, st)
 
-	a.logger.Printf("Starting with %d labelers in queue", len(orderedDIDs))
+	// Periodic connection loop
+	go a.runConnectionLoop(ctx, st)
 
-	// 3. Firehose listener
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-a.stopCh:
-				return
-			default:
-			}
-			if err := a.listenFirehose(ctx, labelers, &orderedDIDs, &mu); err != nil {
-				a.logger.Printf("WARN: label firehose error: %v, reconnecting in 5s", err)
-				select {
-				case <-time.After(5 * time.Second):
-				case <-ctx.Done():
-					return
-				case <-a.stopCh:
-					return
-				}
-			}
-		}
-	}()
-
-	// 4. Periodic connection loop
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-a.stopCh:
-				return
-			case <-ticker.C:
-				mu.Lock()
-				var toConnect []string
-				for _, did := range orderedDIDs {
-					if len(toConnect) >= maxConnectPerTick {
-						break
-					}
-					if !labelers[did] {
-						toConnect = append(toConnect, did)
-					}
-				}
-				mu.Unlock()
-
-				for _, did := range toConnect {
-					select {
-					case sem <- struct{}{}:
-						go func(d string) {
-							defer func() { <-sem }()
-							a.connectToLabeler(ctx, d, labelers, &orderedDIDs, resolveFails, connectFails, &mu)
-						}(did)
-					default:
-					}
-				}
-			}
-		}
-	}()
-
+	// Block until shutdown
 	select {
 	case <-ctx.Done():
 	case <-a.stopCh:
 	}
 }
 
-func (a *LabelAggregator) listenFirehose(ctx context.Context, labelers map[string]bool, orderedDIDs *[]string, mu *sync.Mutex) error {
+func (a *LabelAggregator) loadFromDatabase(st *labelerState) {
+	dbLabelers, err := a.db.GetAllLabelers()
+	if err != nil {
+		a.logger.Printf("WARN: failed to load labelers from database: %v", err)
+		return
+	}
+
+	loaded, skipped := 0, 0
+	for _, l := range dbLabelers {
+		if l.Status == "resolve_failed" {
+			skipped++
+			continue
+		}
+		st.labelers[l.DID] = false
+		st.orderedDIDs = append(st.orderedDIDs, l.DID)
+		loaded++
+	}
+	a.logger.Printf("Loaded %d labelers from database (%d skipped as resolve_failed)", loaded, skipped)
+}
+
+func (a *LabelAggregator) loadFromCSV(st *labelerState) {
+	knownDIDs, err := loadKnownLabelers(a.cfg.LabelAggregatorCSVPath)
+	if err != nil {
+		a.logger.Printf("WARN: failed to load seed labelers from %s: %v", a.cfg.LabelAggregatorCSVPath, err)
+		return
+	}
+
+	added := 0
+	for _, did := range knownDIDs {
+		if _, exists := st.labelers[did]; exists {
+			continue
+		}
+		st.labelers[did] = false
+		st.orderedDIDs = append(st.orderedDIDs, did)
+
+		now := time.Now().UTC()
+		if err := a.db.SaveLabeler(&models.Labeler{
+			DID:       did,
+			Status:    "unknown",
+			FirstSeen: now,
+			UpdatedAt: now,
+		}); err != nil {
+			a.logger.Printf("WARN: failed to save seed labeler %s: %v", did, err)
+		}
+		added++
+	}
+
+	if added > 0 {
+		a.logger.Printf("Added %d new seed labelers from %s", added, a.cfg.LabelAggregatorCSVPath)
+	}
+}
+
+// ==================== Firehose Listener ====================
+
+// runFirehoseListener runs the discovery Firehose with exponential backoff.
+func (a *LabelAggregator) runFirehoseListener(ctx context.Context, st *labelerState) {
+	backoff := 1 * time.Second
+	maxBackoff := 60 * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		default:
+		}
+
+		a.logger.Println("Connecting to Firehose (label discovery)...")
+		err := a.listenFirehoseOnce(ctx, st)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		default:
+		}
+
+		if err != nil {
+			a.logger.Printf("WARN: label firehose error: %v", err)
+			a.logger.Printf("Reconnecting label firehose in %v...", backoff)
+
+			select {
+			case <-time.After(backoff):
+				backoff = minDuration(backoff*2, maxBackoff)
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			}
+		} else {
+			backoff = 1 * time.Second
+			select {
+			case <-time.After(1 * time.Second):
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			}
+		}
+	}
+}
+
+func (a *LabelAggregator) listenFirehoseOnce(ctx context.Context, st *labelerState) error {
 	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.DialContext(ctx, labelFirehoseURL, nil)
+	conn, _, err := dialer.DialContext(ctx, a.cfg.LabelAggregatorFirehoseURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial firehose: %w", err)
 	}
@@ -200,22 +223,20 @@ func (a *LabelAggregator) listenFirehose(ctx context.Context, labelers map[strin
 	a.logger.Println("Connected to Firehose (label discovery)")
 
 	handler := &labelFirehoseHandler{
-		logger:      a.logger,
-		db:          a.db,
-		labelers:    labelers,
-		orderedDIDs: orderedDIDs,
-		mu:          mu,
+		logger: a.logger,
+		db:     a.db,
+		state:  st,
 	}
 	sched := parallel.NewScheduler(10, 100, "label-aggregator", handler.HandleEvent)
 	return events.HandleRepoStream(ctx, conn, sched, nil)
 }
 
+// ==================== Firehose Handler ====================
+
 type labelFirehoseHandler struct {
-	logger      *log.Logger
-	db          *storage.DB
-	labelers    map[string]bool
-	orderedDIDs *[]string
-	mu          *sync.Mutex
+	logger *log.Logger
+	db     *storage.DB
+	state  *labelerState
 }
 
 func (h *labelFirehoseHandler) HandleEvent(ctx context.Context, evt *events.XRPCStreamEvent) error {
@@ -228,13 +249,15 @@ func (h *labelFirehoseHandler) HandleEvent(ctx context.Context, evt *events.XRPC
 			continue
 		}
 		did := commit.Repo
-		h.mu.Lock()
+
+		h.state.mu.Lock()
 		switch op.Action {
 		case "create":
-			if _, exists := h.labelers[did]; !exists {
-				h.labelers[did] = false
-				*h.orderedDIDs = append(*h.orderedDIDs, did)
+			if _, exists := h.state.labelers[did]; !exists {
+				h.state.labelers[did] = false
+				h.state.orderedDIDs = append(h.state.orderedDIDs, did)
 				h.logger.Printf("Discovered new labeler: %s", did)
+
 				now := time.Now().UTC()
 				if err := h.db.SaveLabeler(&models.Labeler{
 					DID:       did,
@@ -246,54 +269,94 @@ func (h *labelFirehoseHandler) HandleEvent(ctx context.Context, evt *events.XRPC
 				}
 			}
 		case "delete":
-			if _, exists := h.labelers[did]; exists {
-				delete(h.labelers, did)
-				removeFromSlice(h.orderedDIDs, did)
+			if _, exists := h.state.labelers[did]; exists {
+				delete(h.state.labelers, did)
+				removeFromSlice(&h.state.orderedDIDs, did)
 				h.logger.Printf("Labeler removed service declaration: %s", did)
 				if err := h.db.DeleteLabeler(did); err != nil {
 					h.logger.Printf("WARN: failed to delete labeler %s: %v", did, err)
 				}
 			}
 		}
-		h.mu.Unlock()
+		h.state.mu.Unlock()
 	}
 	return nil
 }
 
-func (a *LabelAggregator) connectToLabeler(
-	ctx context.Context,
-	did string,
-	labelers map[string]bool,
-	orderedDIDs *[]string,
-	resolveFails map[string]int,
-	connectFails map[string]int,
-	mu *sync.Mutex,
-) {
-	// Resolve DID document
+// ==================== Connection Loop ====================
+
+func (a *LabelAggregator) runConnectionLoop(ctx context.Context, st *labelerState) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.connectNextBatch(ctx, st)
+		}
+	}
+}
+
+func (a *LabelAggregator) connectNextBatch(ctx context.Context, st *labelerState) {
+	maxPerTick := a.cfg.LabelAggregatorMaxPerTick
+	if maxPerTick <= 0 {
+		maxPerTick = 10
+	}
+
+	st.mu.Lock()
+	var toConnect []string
+	for _, did := range st.orderedDIDs {
+		if len(toConnect) >= maxPerTick {
+			break
+		}
+		if !st.labelers[did] {
+			toConnect = append(toConnect, did)
+		}
+	}
+	st.mu.Unlock()
+
+	for _, did := range toConnect {
+		select {
+		case st.sem <- struct{}{}:
+			go func(d string) {
+				defer func() { <-st.sem }()
+				a.connectToLabeler(ctx, st, d)
+			}(did)
+		default:
+		}
+	}
+}
+
+// ==================== Labeler Connection ====================
+
+func (a *LabelAggregator) connectToLabeler(ctx context.Context, st *labelerState, did string) {
 	endpoint, err := resolveLabelerEndpoint(ctx, did)
 	if err != nil {
-		a.recordFailure(did, "resolve", err.Error(), orderedDIDs, resolveFails, mu, maxResolveFailures)
+		a.recordFailure(st, did, "resolve", err.Error(), a.cfg.LabelAggregatorMaxResolveFailures)
 		return
 	}
 	if endpoint == "" {
-		a.recordFailure(did, "resolve", "no #atproto_labeler service found", orderedDIDs, resolveFails, mu, maxResolveFailures)
+		a.recordFailure(st, did, "resolve", "no #atproto_labeler service found", a.cfg.LabelAggregatorMaxResolveFailures)
 		return
 	}
 
-	// Attempt WebSocket connection
 	dialer := websocket.DefaultDialer
 	conn, _, err := dialer.DialContext(ctx, endpoint, nil)
 	if err != nil {
-		a.recordFailure(did, "connect", err.Error(), orderedDIDs, connectFails, mu, maxConnectFailures)
+		a.recordFailure(st, did, "connect", err.Error(), a.cfg.LabelAggregatorMaxConnectFailures)
 		return
 	}
 	defer conn.Close()
 
-	mu.Lock()
-	labelers[did] = true
-	delete(resolveFails, did)
-	delete(connectFails, did)
-	mu.Unlock()
+	st.mu.Lock()
+	st.labelers[did] = true
+	delete(st.resolveFails, did)
+	delete(st.connectFails, did)
+	st.mu.Unlock()
 
 	if err := a.db.UpdateLabelerConnected(did, endpoint); err != nil {
 		a.logger.Printf("WARN: failed to update labeler %s as connected: %v", did, err)
@@ -310,9 +373,9 @@ func (a *LabelAggregator) connectToLabeler(
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			mu.Lock()
-			labelers[did] = false
-			mu.Unlock()
+			st.mu.Lock()
+			st.labelers[did] = false
+			st.mu.Unlock()
 			return
 		}
 
@@ -326,22 +389,20 @@ func (a *LabelAggregator) connectToLabeler(
 
 // recordFailure handles connection failures with type-specific logic.
 // failureType: "resolve" (permanent) or "connect" (temporary).
-func (a *LabelAggregator) recordFailure(
-	did string,
-	failureType string,
-	lastError string,
-	orderedDIDs *[]string,
-	failures map[string]int,
-	mu *sync.Mutex,
-	maxFailures int,
-) {
-	mu.Lock()
-	defer mu.Unlock()
+func (a *LabelAggregator) recordFailure(st *labelerState, did, failureType, lastError string, maxFailures int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	var failures map[string]int
+	if failureType == "resolve" {
+		failures = st.resolveFails
+	} else {
+		failures = st.connectFails
+	}
 
 	failures[did]++
 	failCount := failures[did]
 
-	// Determine status based on failure type and count
 	var status string
 	if failCount >= maxFailures {
 		if failureType == "resolve" {
@@ -359,15 +420,12 @@ func (a *LabelAggregator) recordFailure(
 
 	if failCount >= maxFailures {
 		delete(failures, did)
-		// Move to end of queue (not removed entirely, so it stays in DB)
-		moveToEnd(did, orderedDIDs)
-		return
 	}
 
-	moveToEnd(did, orderedDIDs)
+	moveToEnd(did, &st.orderedDIDs)
 }
 
-// --- helpers ---
+// ==================== Helpers ====================
 
 func loadKnownLabelers(csvPath string) ([]string, error) {
 	f, err := os.Open(csvPath)
@@ -452,4 +510,11 @@ func removeFromSlice(slice *[]string, did string) {
 			return
 		}
 	}
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }

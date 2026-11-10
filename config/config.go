@@ -14,10 +14,20 @@ type Config struct {
 	DatabaseURL      string
 	StatsIntervalSec int
 
-	// Per-fetcher verbose logging
-	PostFetcherVerbose  bool
-	ListFetcherVerbose  bool
-	ActorFetcherVerbose bool
+	// Firehose
+	FirehoseURL              string
+	FirehoseEventChannelSize int
+	FirehoseSchedulerWorkers int
+	FirehoseSchedulerQueue   int
+
+	// Label aggregator
+	LabelAggregatorFirehoseURL        string
+	LabelAggregatorCSVPath            string
+	LabelAggregatorEventChannelSize   int
+	LabelAggregatorMaxConcurrent      int
+	LabelAggregatorMaxPerTick         int
+	LabelAggregatorMaxResolveFailures int
+	LabelAggregatorMaxConnectFailures int
 
 	// Per-processor verbose logging
 	PostProcessorVerbose  bool
@@ -25,15 +35,20 @@ type Config struct {
 	LabelProcessorVerbose bool
 	BlockProcessorVerbose bool
 
+	// Processors batch configuration
+	ProcessorBatchSize int
+	ProcessorTickerSec int
+
+	// Per-fetcher verbose logging
+	PostFetcherVerbose  bool
+	ListFetcherVerbose  bool
+	ActorFetcherVerbose bool
+
 	// Post fetcher specific
 	PostFetchMaxConcurrent   int
 	PostFetchMaxContextDepth int
 	ThreadParentHeight       int
 	ThreadReplyDepth         int
-
-	// Shared processor batch configuration
-	ProcessorBatchSize int
-	ProcessorTickerSec int
 }
 
 // Load reads configuration from .env file and environment variables.
@@ -44,22 +59,35 @@ func Load() *Config {
 		DatabaseURL:      getEnv("DATABASE_URL", "postgres://username:password@localhost:5432/bsky_data?sslmode=disable"),
 		StatsIntervalSec: getEnvAsInt("STATS_INTERVAL_SEC", 10),
 
-		PostFetcherVerbose:  getEnvAsBool("POST_FETCHER_VERBOSE", true),
-		ListFetcherVerbose:  getEnvAsBool("LIST_FETCHER_VERBOSE", false),
-		ActorFetcherVerbose: getEnvAsBool("ACTOR_FETCHER_VERBOSE", false),
+		FirehoseURL:              getEnv("FIREHOSE_URL", "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"),
+		FirehoseEventChannelSize: getEnvAsInt("FIREHOSE_EVENT_CHANNEL_SIZE", 10000),
+		FirehoseSchedulerWorkers: getEnvAsInt("FIREHOSE_SCHEDULER_WORKERS", 10),
+		FirehoseSchedulerQueue:   getEnvAsInt("FIREHOSE_SCHEDULER_QUEUE", 100),
+
+		LabelAggregatorFirehoseURL:        getEnv("LABEL_AGGREGATOR_FIREHOSE_URL", "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"),
+		LabelAggregatorCSVPath:            getEnv("LABEL_AGGREGATOR_CSV_PATH", "labelers.csv"),
+		LabelAggregatorEventChannelSize:   getEnvAsInt("LABEL_AGGREGATOR_EVENT_CHANNEL_SIZE", 10000),
+		LabelAggregatorMaxConcurrent:      getEnvAsInt("LABEL_AGGREGATOR_MAX_CONCURRENT", 20),
+		LabelAggregatorMaxPerTick:         getEnvAsInt("LABEL_AGGREGATOR_MAX_PER_TICK", 10),
+		LabelAggregatorMaxResolveFailures: getEnvAsInt("LABEL_AGGREGATOR_MAX_RESOLVE_FAILURES", 3),
+		LabelAggregatorMaxConnectFailures: getEnvAsInt("LABEL_AGGREGATOR_MAX_CONNECT_FAILURES", 5),
 
 		PostProcessorVerbose:  getEnvAsBool("POST_PROCESSOR_VERBOSE", false),
 		ListProcessorVerbose:  getEnvAsBool("LIST_PROCESSOR_VERBOSE", false),
 		LabelProcessorVerbose: getEnvAsBool("LABEL_PROCESSOR_VERBOSE", false),
 		BlockProcessorVerbose: getEnvAsBool("BLOCK_PROCESSOR_VERBOSE", false),
 
+		ProcessorBatchSize: getEnvAsInt("PROCESSOR_BATCH_SIZE", 500),
+		ProcessorTickerSec: getEnvAsInt("PROCESSOR_TICKER_SEC", 3),
+
+		PostFetcherVerbose:  getEnvAsBool("POST_FETCHER_VERBOSE", true),
+		ListFetcherVerbose:  getEnvAsBool("LIST_FETCHER_VERBOSE", false),
+		ActorFetcherVerbose: getEnvAsBool("ACTOR_FETCHER_VERBOSE", false),
+
 		PostFetchMaxConcurrent:   getEnvAsInt("POST_FETCH_MAX_CONCURRENT", 5),
 		PostFetchMaxContextDepth: getEnvAsInt("POST_FETCH_MAX_CONTEXT_DEPTH", 10),
 		ThreadParentHeight:       getEnvAsInt("THREAD_PARENT_HEIGHT", 1000),
 		ThreadReplyDepth:         getEnvAsInt("THREAD_REPLY_DEPTH", 1000),
-
-		ProcessorBatchSize: getEnvAsInt("PROCESSOR_BATCH_SIZE", 500),
-		ProcessorTickerSec: getEnvAsInt("PROCESSOR_TICKER_SEC", 3),
 	}
 }
 
