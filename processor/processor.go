@@ -14,22 +14,27 @@ import (
 	"bsky-collector/storage"
 )
 
-// Processor orchestrates the processing of Firehose events and label stream events.
+// ==================== Types ====================
+
+// Processor orchestrates Firehose event processing and label stream processing.
 type Processor struct {
 	cfg    *config.Config
 	db     *storage.DB
 	logger *log.Logger
 	ctx    context.Context
 
+	// Processors (batch, event-driven)
 	postProcessor  *PostProcessor
 	blockProcessor *BlockProcessor
 	listProcessor  *ListProcessor
 	labelProcessor *LabelProcessor
 
+	// Fetchers (async, API-driven)
 	actorFetcher *ActorFetcher
 	listFetcher  *ListFetcher
-	postFetcher  *PostFetcher // NEW
+	postFetcher  *PostFetcher
 
+	// Throughput stats
 	statsMu      sync.RWMutex
 	totalEvents  int64
 	totalPosts   int64
@@ -37,7 +42,9 @@ type Processor struct {
 	eventsPerSec float64
 }
 
-// NewProcessor creates a new Processor.
+// ==================== Lifecycle ====================
+
+// NewProcessor creates a new Processor and starts all fetchers.
 func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Processor {
 	p := &Processor{
 		cfg:       cfg,
@@ -46,18 +53,20 @@ func NewProcessor(cfg *config.Config, db *storage.DB, logger *log.Logger) *Proce
 		lastReset: time.Now(),
 	}
 
+	// Event processors
 	p.postProcessor = NewPostProcessor(p)
 	p.blockProcessor = NewBlockProcessor(p)
 	p.listProcessor = NewListProcessor(p)
 	p.labelProcessor = NewLabelProcessor(p)
 
+	// Fetchers
 	p.actorFetcher = NewActorFetcher(p)
 	p.actorFetcher.Start()
 
 	p.listFetcher = NewListFetcher(p)
 	p.listFetcher.Start()
 
-	p.postFetcher = NewPostFetcher(p) // NEW
+	p.postFetcher = NewPostFetcher(p)
 	p.postFetcher.Start()
 
 	go p.calculateThroughput()
@@ -70,53 +79,7 @@ func (p *Processor) SetContext(ctx context.Context) {
 	p.ctx = ctx
 }
 
-// ProcessRawEvent processes a raw Firehose event.
-func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
-	if evt.RepoCommit == nil {
-		return nil
-	}
-
-	p.RecordEvent()
-
-	commit := evt.RepoCommit
-	for _, op := range commit.Ops {
-		if op.Path == "" {
-			continue
-		}
-
-		if strings.HasPrefix(op.Path, "app.bsky.feed.post/") {
-			if err := p.postProcessor.ProcessPost(commit, op); err != nil {
-				p.logger.Printf("WARN: failed to handle post: %v", err)
-			}
-			continue
-		}
-
-		if strings.HasPrefix(op.Path, "app.bsky.graph.block/") {
-			if err := p.blockProcessor.ProcessBlock(commit, op); err != nil {
-				p.logger.Printf("WARN: failed to handle block: %v", err)
-			}
-			continue
-		}
-
-		if strings.HasPrefix(op.Path, "app.bsky.graph.list/") ||
-			strings.HasPrefix(op.Path, "app.bsky.graph.listitem/") ||
-			strings.HasPrefix(op.Path, "app.bsky.graph.listblock/") {
-			if err := p.listProcessor.ProcessListEvent(commit, op); err != nil {
-				p.logger.Printf("WARN: failed to handle list event: %v", err)
-			}
-			continue
-		}
-	}
-
-	return nil
-}
-
-// ProcessLabelMessage processes a raw message from the label aggregator.
-func (p *Processor) ProcessLabelMessage(message []byte) error {
-	return p.labelProcessor.ProcessLabelMessage(message)
-}
-
-// Close gracefully shuts down the processor.
+// Close gracefully shuts down all processors and fetchers.
 func (p *Processor) Close() {
 	p.logger.Println("Shutting down processor")
 
@@ -145,7 +108,51 @@ func (p *Processor) Close() {
 	p.logger.Println("Processor closed")
 }
 
-// sanitizeText removes NULL bytes, invalid UTF-8 sequences and control characters
+// ==================== Event Dispatch ====================
+
+// ProcessRawEvent processes a raw Firehose event.
+func (p *Processor) ProcessRawEvent(evt *events.XRPCStreamEvent) error {
+	if evt.RepoCommit == nil {
+		return nil
+	}
+
+	p.RecordEvent()
+
+	commit := evt.RepoCommit
+	for _, op := range commit.Ops {
+		if op.Path == "" {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(op.Path, "app.bsky.feed.post/"):
+			if err := p.postProcessor.ProcessPost(commit, op); err != nil {
+				p.logger.Printf("WARN: failed to handle post: %v", err)
+			}
+		case strings.HasPrefix(op.Path, "app.bsky.graph.block/"):
+			if err := p.blockProcessor.ProcessBlock(commit, op); err != nil {
+				p.logger.Printf("WARN: failed to handle block: %v", err)
+			}
+		case strings.HasPrefix(op.Path, "app.bsky.graph.list/"),
+			strings.HasPrefix(op.Path, "app.bsky.graph.listitem/"),
+			strings.HasPrefix(op.Path, "app.bsky.graph.listblock/"):
+			if err := p.listProcessor.ProcessListEvent(commit, op); err != nil {
+				p.logger.Printf("WARN: failed to handle list event: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ProcessLabelMessage processes a raw message from the label aggregator.
+func (p *Processor) ProcessLabelMessage(message []byte) error {
+	return p.labelProcessor.ProcessLabelMessage(message)
+}
+
+// ==================== Helpers ====================
+
+// sanitizeText removes NULL bytes, invalid UTF-8 sequences and control characters.
 func sanitizeText(text string) string {
 	if text == "" {
 		return ""
@@ -168,12 +175,12 @@ func sanitizeText(text string) string {
 			builder.WriteRune(r)
 		}
 	}
-	text = builder.String()
 
-	return strings.TrimSpace(text)
+	return strings.TrimSpace(builder.String())
 }
 
-// --- Throughput methods ---
+// ==================== Throughput ====================
+
 func (p *Processor) calculateThroughput() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -197,12 +204,14 @@ func (p *Processor) calculateThroughput() {
 	}
 }
 
+// RecordEvent increments the per-window event counter.
 func (p *Processor) RecordEvent() {
 	p.statsMu.Lock()
 	p.totalEvents++
 	p.statsMu.Unlock()
 }
 
+// RecordPost increments the total post counter.
 func (p *Processor) RecordPost() {
 	p.statsMu.Lock()
 	p.totalPosts++

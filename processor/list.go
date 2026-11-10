@@ -14,31 +14,48 @@ import (
 	"bsky-collector/models"
 )
 
+// ==================== Types ====================
+
 // ListProcessor handles batch processing of list events.
 type ListProcessor struct {
-	p              *Processor
+	p *Processor
+
 	listBatch      []*models.List
 	listItemBatch  []*models.ListItem
 	listBlockBatch []*models.ListBlock
-	deleteBatch    map[string][]string // "list", "listitem", "listblock" -> URIs
+	deleteBatch    map[string][]string
 	batchMu        sync.Mutex
-	batchSize      int
-	ticker         *time.Ticker
-	stopCh         chan struct{}
-	closeOnce      sync.Once
+
+	batchSize int
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	verbose   bool
 }
 
-// NewListProcessor creates a new ListProcessor.
+// ==================== Lifecycle ====================
+
+// NewListProcessor creates a new ListProcessor using shared processor config.
 func NewListProcessor(p *Processor) *ListProcessor {
+	batchSize := p.cfg.ProcessorBatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	tickerSec := p.cfg.ProcessorTickerSec
+	if tickerSec <= 0 {
+		tickerSec = 3
+	}
+
 	lp := &ListProcessor{
 		p:              p,
-		listBatch:      make([]*models.List, 0, 500),
-		listItemBatch:  make([]*models.ListItem, 0, 500),
-		listBlockBatch: make([]*models.ListBlock, 0, 500),
+		listBatch:      make([]*models.List, 0, batchSize),
+		listItemBatch:  make([]*models.ListItem, 0, batchSize),
+		listBlockBatch: make([]*models.ListBlock, 0, batchSize),
 		deleteBatch:    make(map[string][]string),
-		batchSize:      500,
-		ticker:         time.NewTicker(3 * time.Second),
+		batchSize:      batchSize,
+		ticker:         time.NewTicker(time.Duration(tickerSec) * time.Second),
 		stopCh:         make(chan struct{}),
+		verbose:        p.cfg.ListProcessorVerbose,
 	}
 	go lp.autoFlush()
 	return lp
@@ -57,6 +74,20 @@ func (lp *ListProcessor) autoFlush() {
 		}
 	}
 }
+
+// Close shuts down the ListProcessor.
+func (lp *ListProcessor) Close() {
+	lp.closeOnce.Do(func() {
+		close(lp.stopCh)
+		lp.ticker.Stop()
+		lp.flushLists()
+		lp.flushListItems()
+		lp.flushListBlocks()
+		lp.flushDeletes()
+	})
+}
+
+// ==================== Dispatch ====================
 
 // ProcessListEvent processes a list event based on the collection.
 func (lp *ListProcessor) ProcessListEvent(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
@@ -87,7 +118,6 @@ func (lp *ListProcessor) processList(commit *atproto.SyncSubscribeRepos_Commit, 
 	}
 }
 
-// handleListCreate handles list creation: create record and fetch creator.
 func (lp *ListProcessor) handleListCreate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	list, err := lp.buildList(commit, op)
 	if err != nil {
@@ -95,26 +125,16 @@ func (lp *ListProcessor) handleListCreate(commit *atproto.SyncSubscribeRepos_Com
 	}
 	list.Status = "active"
 
-	// Queue the list creator for actor fetching
+	lp.logf("List create event: did=%s rkey=%s", list.DID, list.RKey)
+
 	if lp.p.actorFetcher != nil {
 		lp.p.actorFetcher.QueueDID(list.DID)
 	}
 
-	lp.batchMu.Lock()
-	lp.listBatch = append(lp.listBatch, list)
-	if len(lp.listBatch) >= lp.batchSize {
-		batch := lp.listBatch
-		lp.listBatch = make([]*models.List, 0, lp.batchSize)
-		lp.batchMu.Unlock()
-		lp.flushListsWithBatch(batch)
-	} else {
-		lp.batchMu.Unlock()
-	}
-
+	lp.addToListBatch(list)
 	return nil
 }
 
-// handleListUpdate handles list update: update existing or create if unknown.
 func (lp *ListProcessor) handleListUpdate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
 
@@ -123,40 +143,41 @@ func (lp *ListProcessor) handleListUpdate(commit *atproto.SyncSubscribeRepos_Com
 		return err
 	}
 
-	if existing == nil {
-		// List created before startup - create it as active
-		// lp.p.logger.Printf("📝 Update for unknown list (created before startup): %s", uri)
-		list, err := lp.buildList(commit, op)
-		if err != nil {
-			return err
-		}
-		list.Status = "active"
-
-		// Queue the list creator for actor fetching
-		if lp.p.actorFetcher != nil {
-			lp.p.actorFetcher.QueueDID(list.DID)
-		}
-
-		lp.batchMu.Lock()
-		lp.listBatch = append(lp.listBatch, list)
-		if len(lp.listBatch) >= lp.batchSize {
-			batch := lp.listBatch
-			lp.listBatch = make([]*models.List, 0, lp.batchSize)
-			lp.batchMu.Unlock()
-			lp.flushListsWithBatch(batch)
-		} else {
-			lp.batchMu.Unlock()
-		}
-		return nil
-	}
-
-	// Update existing list
 	list, err := lp.buildList(commit, op)
 	if err != nil {
 		return err
 	}
 	list.Status = "active"
 
+	if existing == nil {
+		lp.logf("List update event (NEW, created before startup): did=%s rkey=%s", list.DID, list.RKey)
+		if lp.p.actorFetcher != nil {
+			lp.p.actorFetcher.QueueDID(list.DID)
+		}
+	} else {
+		lp.logf("List update event (EXISTING): did=%s rkey=%s", list.DID, list.RKey)
+	}
+
+	lp.addToListBatch(list)
+	return nil
+}
+
+func (lp *ListProcessor) handleListDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
+	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
+
+	existing, err := lp.p.db.GetListByURI(uri)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return nil
+	}
+
+	lp.addDelete("list", uri)
+	return nil
+}
+
+func (lp *ListProcessor) addToListBatch(list *models.List) {
 	lp.batchMu.Lock()
 	lp.listBatch = append(lp.listBatch, list)
 	if len(lp.listBatch) >= lp.batchSize {
@@ -167,29 +188,8 @@ func (lp *ListProcessor) handleListUpdate(commit *atproto.SyncSubscribeRepos_Com
 	} else {
 		lp.batchMu.Unlock()
 	}
-
-	return nil
 }
 
-// handleListDelete handles list deletion: mark deleted if exists.
-func (lp *ListProcessor) handleListDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
-	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
-
-	existing, err := lp.p.db.GetListByURI(uri)
-	if err != nil {
-		return err
-	}
-
-	if existing == nil {
-		// List was created before we started listening
-		return nil
-	}
-
-	lp.addDelete("list", uri)
-	return nil
-}
-
-// buildList builds a List model from Firehose data.
 func (lp *ListProcessor) buildList(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) (*models.List, error) {
 	parts := strings.Split(op.Path, "/")
 	if len(parts) != 2 {
@@ -210,7 +210,6 @@ func (lp *ListProcessor) buildList(commit *atproto.SyncSubscribeRepos_Commit, op
 		ReceivedAt: time.Now().UTC(),
 	}
 
-	// Parse CAR to extract name, purpose, description, created_at
 	if len(commit.Blocks) > 0 && cidStr != "" {
 		blockReader, err := car.NewBlockReader(bytes.NewReader(commit.Blocks))
 		if err == nil {
@@ -259,30 +258,21 @@ func (lp *ListProcessor) processListItem(commit *atproto.SyncSubscribeRepos_Comm
 	}
 }
 
-// handleListItemCreate handles list item creation: create record and fetch actor.
 func (lp *ListProcessor) handleListItemCreate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	item, err := lp.buildListItem(commit, op)
-	if err != nil {
+	if err != nil || item == nil {
 		return err
-	}
-	if item == nil {
-		return nil
 	}
 	item.Status = "active"
 
-	// Check if the list exists in our database
 	existingList, err := lp.p.db.GetListByURI(item.ListURI)
 	if err != nil {
 		return err
 	}
-
 	if existingList == nil {
-		// List doesn't exist yet - skip this list item
-		// lp.p.logger.Printf("⚠️ Skipping list item for unknown list: %s (list not yet collected)", item.ListURI)
 		return nil
 	}
 
-	// Queue the list item subject for actor fetching (the user being added)
 	if lp.p.actorFetcher != nil {
 		lp.p.actorFetcher.QueueDID(item.SubjectDID)
 	}
@@ -301,7 +291,6 @@ func (lp *ListProcessor) handleListItemCreate(commit *atproto.SyncSubscribeRepos
 	return nil
 }
 
-// handleListItemDelete handles list item deletion: mark deleted if exists.
 func (lp *ListProcessor) handleListItemDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
 
@@ -309,9 +298,7 @@ func (lp *ListProcessor) handleListItemDelete(commit *atproto.SyncSubscribeRepos
 	if err != nil {
 		return err
 	}
-
 	if existing == nil {
-		// List item was created before we started listening
 		return nil
 	}
 
@@ -319,7 +306,6 @@ func (lp *ListProcessor) handleListItemDelete(commit *atproto.SyncSubscribeRepos
 	return nil
 }
 
-// buildListItem builds a ListItem model from Firehose data.
 func (lp *ListProcessor) buildListItem(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) (*models.ListItem, error) {
 	parts := strings.Split(op.Path, "/")
 	if len(parts) != 2 {
@@ -340,7 +326,6 @@ func (lp *ListProcessor) buildListItem(commit *atproto.SyncSubscribeRepos_Commit
 		ReceivedAt: time.Now().UTC(),
 	}
 
-	// Parse CAR to extract list_uri, subject_did, created_at
 	if len(commit.Blocks) > 0 && cidStr != "" {
 		blockReader, err := car.NewBlockReader(bytes.NewReader(commit.Blocks))
 		if err == nil {
@@ -371,7 +356,7 @@ func (lp *ListProcessor) buildListItem(commit *atproto.SyncSubscribeRepos_Commit
 	}
 
 	if item.ListURI == "" || item.SubjectDID == "" {
-		lp.p.logger.Printf("⚠️ Could not extract list or subject from listitem event: %s", op.Path)
+		lp.warnf("WARN: could not extract list or subject from listitem event: %s", op.Path)
 		return nil, nil
 	}
 
@@ -391,33 +376,22 @@ func (lp *ListProcessor) processListBlock(commit *atproto.SyncSubscribeRepos_Com
 	}
 }
 
-// handleListBlockCreate handles list block creation: create record, fetch actor,
-// and fetch the target list if it doesn't exist.
 func (lp *ListProcessor) handleListBlockCreate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	listBlock, err := lp.buildListBlock(commit, op)
-	if err != nil {
+	if err != nil || listBlock == nil {
 		return err
-	}
-	if listBlock == nil {
-		return nil
 	}
 	listBlock.Status = "active"
 
-	// Check if the list exists in our database
 	existingList, err := lp.p.db.GetListByURI(listBlock.SubjectList)
 	if err != nil {
 		return err
 	}
-
-	if existingList == nil {
-		// List doesn't exist - fetch it proactively via API
-		// lp.p.logger.Printf("📋 List not found, fetching via API: %s", listBlock.SubjectList)
-		if lp.p.listFetcher != nil {
-			lp.p.listFetcher.QueueListURI(listBlock.SubjectList)
-		}
+	if existingList == nil && lp.p.listFetcher != nil {
+		lp.logf("Listblock triggers list fetch: subject_list=%s (blocker=%s)", listBlock.SubjectList, listBlock.DID)
+		lp.p.listFetcher.QueueListURI(listBlock.SubjectList)
 	}
 
-	// Queue the list block creator for actor fetching
 	if lp.p.actorFetcher != nil {
 		lp.p.actorFetcher.QueueDID(listBlock.DID)
 	}
@@ -436,7 +410,6 @@ func (lp *ListProcessor) handleListBlockCreate(commit *atproto.SyncSubscribeRepo
 	return nil
 }
 
-// handleListBlockDelete handles list block deletion: mark deleted if exists.
 func (lp *ListProcessor) handleListBlockDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
 
@@ -444,9 +417,7 @@ func (lp *ListProcessor) handleListBlockDelete(commit *atproto.SyncSubscribeRepo
 	if err != nil {
 		return err
 	}
-
 	if existing == nil {
-		// List block was created before we started listening
 		return nil
 	}
 
@@ -454,7 +425,6 @@ func (lp *ListProcessor) handleListBlockDelete(commit *atproto.SyncSubscribeRepo
 	return nil
 }
 
-// buildListBlock builds a ListBlock model from Firehose data.
 func (lp *ListProcessor) buildListBlock(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) (*models.ListBlock, error) {
 	parts := strings.Split(op.Path, "/")
 	if len(parts) != 2 {
@@ -475,7 +445,6 @@ func (lp *ListProcessor) buildListBlock(commit *atproto.SyncSubscribeRepos_Commi
 		ReceivedAt: time.Now().UTC(),
 	}
 
-	// Parse CAR to extract subject_list, created_at
 	if len(commit.Blocks) > 0 && cidStr != "" {
 		blockReader, err := car.NewBlockReader(bytes.NewReader(commit.Blocks))
 		if err == nil {
@@ -503,14 +472,14 @@ func (lp *ListProcessor) buildListBlock(commit *atproto.SyncSubscribeRepos_Commi
 	}
 
 	if listBlock.SubjectList == "" {
-		lp.p.logger.Printf("⚠️ Could not extract subject_list from listblock event: %s", op.Path)
+		lp.warnf("WARN: could not extract subject_list from listblock event: %s", op.Path)
 		return nil, nil
 	}
 
 	return listBlock, nil
 }
 
-// ==================== Flush Methods ====================
+// ==================== Flush ====================
 
 func (lp *ListProcessor) flushLists() {
 	lp.batchMu.Lock()
@@ -529,9 +498,11 @@ func (lp *ListProcessor) flushListsWithBatch(batch []*models.List) {
 		return
 	}
 	if err := lp.p.db.SaveListsBatch(batch); err != nil {
-		lp.p.logger.Printf("⚠️ Failed to save batch of %d lists: %v", len(batch), err)
-	} else {
-		// lp.p.logger.Printf("📋 Saved %d lists in batch", len(batch))
+		lp.warnf("WARN: failed to save batch of %d lists: %v", len(batch), err)
+		return
+	}
+	for _, l := range batch {
+		lp.logf("Saved list: did=%s rkey=%s name=%q", l.DID, l.RKey, l.Name)
 	}
 }
 
@@ -552,9 +523,9 @@ func (lp *ListProcessor) flushListItemsWithBatch(batch []*models.ListItem) {
 		return
 	}
 	if err := lp.p.db.SaveListItemsBatch(batch); err != nil {
-		lp.p.logger.Printf("⚠️ Failed to save batch of %d list items: %v", len(batch), err)
+		lp.warnf("WARN: failed to save batch of %d list items: %v", len(batch), err)
 	} else {
-		// lp.p.logger.Printf("👥 Saved %d list items in batch", len(batch))
+		lp.logf("Saved %d list items", len(batch))
 	}
 }
 
@@ -575,24 +546,27 @@ func (lp *ListProcessor) flushListBlocksWithBatch(batch []*models.ListBlock) {
 		return
 	}
 	if err := lp.p.db.SaveListBlocksBatch(batch); err != nil {
-		lp.p.logger.Printf("⚠️ Failed to save batch of %d list blocks: %v", len(batch), err)
+		lp.warnf("WARN: failed to save batch of %d list blocks: %v", len(batch), err)
 	} else {
-		// lp.p.logger.Printf("🚫 Saved %d list blocks in batch", len(batch))
+		lp.logf("Saved %d list blocks", len(batch))
 	}
 }
 
-// ==================== Delete Methods ====================
+// ==================== Delete ====================
 
 func (lp *ListProcessor) addDelete(collection, uri string) {
 	lp.batchMu.Lock()
-	defer lp.batchMu.Unlock()
 	lp.deleteBatch[collection] = append(lp.deleteBatch[collection], uri)
-	if len(lp.deleteBatch[collection]) >= lp.batchSize/5 {
-		batch := lp.deleteBatch[collection]
+	shouldFlush := len(lp.deleteBatch[collection]) >= lp.batchSize/5
+	var batch []string
+	if shouldFlush {
+		batch = lp.deleteBatch[collection]
 		lp.deleteBatch[collection] = make([]string, 0, lp.batchSize/5)
-		lp.batchMu.Unlock()
+	}
+	lp.batchMu.Unlock()
+
+	if shouldFlush {
 		lp.flushDeletesWithBatch(collection, batch)
-		lp.batchMu.Lock()
 	}
 }
 
@@ -618,37 +592,30 @@ func (lp *ListProcessor) flushDeletesWithBatch(collection string, uris []string)
 	switch collection {
 	case "list":
 		err = lp.p.db.DeleteListsBatch(uris)
-		if err == nil {
-			// lp.p.logger.Printf("🗑️ Deleted %d lists in batch", len(uris))
-		}
 	case "listitem":
 		err = lp.p.db.DeleteListItemsBatch(uris)
-		if err == nil {
-			// lp.p.logger.Printf("🗑️ Deleted %d list items in batch", len(uris))
-		}
 	case "listblock":
 		err = lp.p.db.DeleteListBlocksBatch(uris)
-		if err == nil {
-			// lp.p.logger.Printf("🗑️ Deleted %d list blocks in batch", len(uris))
-		}
 	default:
-		// lp.p.logger.Printf("⚠️ Unknown collection for delete: %s", collection)
+		lp.warnf("WARN: unknown collection for delete: %s", collection)
 		return
 	}
 
 	if err != nil {
-		lp.p.logger.Printf("⚠️ Failed to delete batch of %d %s: %v", len(uris), collection, err)
+		lp.warnf("WARN: failed to delete batch of %d %s: %v", len(uris), collection, err)
+	} else {
+		lp.logf("Deleted %d %s", len(uris), collection)
 	}
 }
 
-// Close shuts down the ListProcessor.
-func (lp *ListProcessor) Close() {
-	lp.closeOnce.Do(func() {
-		close(lp.stopCh)
-		lp.ticker.Stop()
-		lp.flushLists()
-		lp.flushListItems()
-		lp.flushListBlocks()
-		lp.flushDeletes()
-	})
+// ==================== Logging ====================
+
+func (lp *ListProcessor) logf(format string, args ...interface{}) {
+	if lp.verbose {
+		lp.p.logger.Printf(format, args...)
+	}
+}
+
+func (lp *ListProcessor) warnf(format string, args ...interface{}) {
+	lp.p.logger.Printf(format, args...)
 }

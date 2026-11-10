@@ -14,27 +14,43 @@ import (
 	"bsky-collector/models"
 )
 
+// ==================== Types ====================
+
 // BlockProcessor handles batch processing of block events.
 type BlockProcessor struct {
 	p           *Processor
 	blockBatch  []*models.Block
 	deleteBatch []string
 	batchMu     sync.Mutex
-	batchSize   int
-	ticker      *time.Ticker
-	stopCh      chan struct{}
-	closeOnce   sync.Once
+
+	batchSize int // block batch threshold; delete uses batchSize/5
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	verbose   bool
 }
 
-// NewBlockProcessor creates a new BlockProcessor.
+// ==================== Lifecycle ====================
+
+// NewBlockProcessor creates a new BlockProcessor using shared processor config.
 func NewBlockProcessor(p *Processor) *BlockProcessor {
+	batchSize := p.cfg.ProcessorBatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	tickerSec := p.cfg.ProcessorTickerSec
+	if tickerSec <= 0 {
+		tickerSec = 3
+	}
+
 	bp := &BlockProcessor{
 		p:           p,
-		blockBatch:  make([]*models.Block, 0, 500),
-		deleteBatch: make([]string, 0, 100),
-		batchSize:   500,
-		ticker:      time.NewTicker(3 * time.Second),
+		blockBatch:  make([]*models.Block, 0, batchSize),
+		deleteBatch: make([]string, 0, batchSize/5),
+		batchSize:   batchSize,
+		ticker:      time.NewTicker(time.Duration(tickerSec) * time.Second),
 		stopCh:      make(chan struct{}),
+		verbose:     p.cfg.BlockProcessorVerbose,
 	}
 	go bp.autoFlush()
 	return bp
@@ -52,6 +68,18 @@ func (bp *BlockProcessor) autoFlush() {
 	}
 }
 
+// Close shuts down the BlockProcessor.
+func (bp *BlockProcessor) Close() {
+	bp.closeOnce.Do(func() {
+		close(bp.stopCh)
+		bp.ticker.Stop()
+		bp.flushBlocks()
+		bp.flushDeletes()
+	})
+}
+
+// ==================== Dispatch ====================
+
 // ProcessBlock processes a block event (create or delete).
 func (bp *BlockProcessor) ProcessBlock(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	switch op.Action {
@@ -64,34 +92,95 @@ func (bp *BlockProcessor) ProcessBlock(commit *atproto.SyncSubscribeRepos_Commit
 	}
 }
 
+// ==================== Handlers ====================
+
 // handleCreate handles a block creation event.
 func (bp *BlockProcessor) handleCreate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
+	block, err := bp.buildBlock(commit, op)
+	if err != nil || block == nil {
+		return err
+	}
+
+	// Queue both actors (blocker and blockee) for fetching
+	if bp.p.actorFetcher != nil {
+		bp.p.actorFetcher.QueueDID(block.DID)
+		bp.p.actorFetcher.QueueDID(block.SubjectDID)
+	}
+
+	bp.logf("Block create: blocker=%s blockee=%s rkey=%s", block.DID, block.SubjectDID, block.RKey)
+	bp.addToBlockBatch(block)
+	return nil
+}
+
+// handleDelete handles a block deletion event.
+func (bp *BlockProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
+	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
+
+	existingBlock, err := bp.p.db.GetBlockByURI(uri)
+	if err != nil {
+		return err
+	}
+	if existingBlock == nil {
+		return nil
+	}
+
+	bp.batchMu.Lock()
+	bp.deleteBatch = append(bp.deleteBatch, uri)
+	if len(bp.deleteBatch) >= bp.batchSize/5 {
+		batch := bp.deleteBatch
+		bp.deleteBatch = make([]string, 0, bp.batchSize/5)
+		bp.batchMu.Unlock()
+		bp.flushDeletesWithBatch(batch)
+	} else {
+		bp.batchMu.Unlock()
+	}
+	return nil
+}
+
+// addToBlockBatch appends a block to the batch, flushing if full.
+func (bp *BlockProcessor) addToBlockBatch(block *models.Block) {
+	bp.batchMu.Lock()
+	bp.blockBatch = append(bp.blockBatch, block)
+	if len(bp.blockBatch) >= bp.batchSize {
+		batch := bp.blockBatch
+		bp.blockBatch = make([]*models.Block, 0, bp.batchSize)
+		bp.batchMu.Unlock()
+		bp.flushBlocksWithBatch(batch)
+	} else {
+		bp.batchMu.Unlock()
+	}
+}
+
+// ==================== Build ====================
+
+// buildBlock builds a Block model from Firehose data by parsing the CAR file.
+// Returns nil if the subject cannot be extracted.
+func (bp *BlockProcessor) buildBlock(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) (*models.Block, error) {
 	parts := strings.Split(op.Path, "/")
 	if len(parts) != 2 {
-		return nil
+		return nil, nil
 	}
 	rkey := parts[1]
 
-	var subjectDID string
-	var createdAt time.Time
-	var cidStr string
-
+	cidStr := ""
 	if op.Cid != nil {
 		cidStr = op.Cid.String()
 	}
 
-	// Parse CAR to extract subject and created_at
+	var subjectDID string
+	var createdAt time.Time
+
 	if len(commit.Blocks) > 0 && cidStr != "" {
 		blockReader, err := car.NewBlockReader(bytes.NewReader(commit.Blocks))
 		if err == nil {
 			for {
-				block, err := blockReader.Next()
+				carBlock, err := blockReader.Next()
 				if err != nil {
 					break
 				}
-				if block.Cid().String() == cidStr {
+				if carBlock.Cid().String() == cidStr {
 					var record map[string]interface{}
-					if err := cbor.Unmarshal(block.RawData(), &record); err == nil {
+					if err := cbor.Unmarshal(carBlock.RawData(), &record); err == nil {
 						if subject, ok := record["subject"].(string); ok {
 							subjectDID = subject
 						}
@@ -108,11 +197,11 @@ func (bp *BlockProcessor) handleCreate(commit *atproto.SyncSubscribeRepos_Commit
 	}
 
 	if subjectDID == "" {
-		bp.p.logger.Printf("⚠️ Could not extract subject from block event: %s", op.Path)
-		return nil
+		bp.warnf("WARN: could not extract subject from block event: %s", op.Path)
+		return nil, nil
 	}
 
-	block := &models.Block{
+	return &models.Block{
 		URI:        fmt.Sprintf("at://%s/%s", commit.Repo, op.Path),
 		DID:        commit.Repo,
 		SubjectDID: subjectDID,
@@ -121,60 +210,11 @@ func (bp *BlockProcessor) handleCreate(commit *atproto.SyncSubscribeRepos_Commit
 		CreatedAt:  createdAt.UTC(),
 		ReceivedAt: time.Now().UTC(),
 		Status:     "active",
-	}
-
-	// Queue both actors for fetching (blocker and blockee)
-	if bp.p.actorFetcher != nil {
-		bp.p.actorFetcher.QueueDID(commit.Repo) // The user who performed the block
-		bp.p.actorFetcher.QueueDID(subjectDID)  // The user who was blocked
-	}
-
-	bp.batchMu.Lock()
-	bp.blockBatch = append(bp.blockBatch, block)
-	if len(bp.blockBatch) >= bp.batchSize {
-		batch := bp.blockBatch
-		bp.blockBatch = make([]*models.Block, 0, bp.batchSize)
-		bp.batchMu.Unlock()
-		bp.flushBlocksWithBatch(batch)
-	} else {
-		bp.batchMu.Unlock()
-	}
-
-	return nil
+	}, nil
 }
 
-// handleDelete handles a block deletion event.
-func (bp *BlockProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
-	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
+// ==================== Flush ====================
 
-	// Check if the block exists in our database
-	existingBlock, err := bp.p.db.GetBlockByURI(uri)
-	if err != nil {
-		return err
-	}
-
-	if existingBlock == nil {
-		// Block was created before we started listening
-		// bp.p.logger.Printf("📭 Received delete for unknown block: %s", uri)
-		return nil
-	}
-
-	// Add to delete batch
-	bp.batchMu.Lock()
-	bp.deleteBatch = append(bp.deleteBatch, uri)
-	if len(bp.deleteBatch) >= bp.batchSize/5 {
-		batch := bp.deleteBatch
-		bp.deleteBatch = make([]string, 0, bp.batchSize/5)
-		bp.batchMu.Unlock()
-		bp.flushDeletesWithBatch(batch)
-	} else {
-		bp.batchMu.Unlock()
-	}
-
-	return nil
-}
-
-// flushBlocks flushes pending block batch.
 func (bp *BlockProcessor) flushBlocks() {
 	bp.batchMu.Lock()
 	if len(bp.blockBatch) == 0 {
@@ -187,19 +227,17 @@ func (bp *BlockProcessor) flushBlocks() {
 	bp.flushBlocksWithBatch(batch)
 }
 
-// flushBlocksWithBatch saves a batch of blocks to the database.
 func (bp *BlockProcessor) flushBlocksWithBatch(batch []*models.Block) {
 	if len(batch) == 0 {
 		return
 	}
 	if err := bp.p.db.SaveBlocksBatch(batch); err != nil {
-		bp.p.logger.Printf("⚠️ Failed to save batch of %d blocks: %v", len(batch), err)
+		bp.warnf("WARN: failed to save batch of %d blocks: %v", len(batch), err)
 	} else {
-		// bp.p.logger.Printf("🔒 Saved %d blocks in batch", len(batch))
+		bp.logf("Saved %d blocks", len(batch))
 	}
 }
 
-// flushDeletes flushes pending delete batch.
 func (bp *BlockProcessor) flushDeletes() {
 	bp.batchMu.Lock()
 	if len(bp.deleteBatch) == 0 {
@@ -212,24 +250,25 @@ func (bp *BlockProcessor) flushDeletes() {
 	bp.flushDeletesWithBatch(batch)
 }
 
-// flushDeletesWithBatch marks multiple blocks as deleted in a single transaction.
 func (bp *BlockProcessor) flushDeletesWithBatch(uris []string) {
 	if len(uris) == 0 {
 		return
 	}
 	if err := bp.p.db.DeleteBlocksBatch(uris); err != nil {
-		bp.p.logger.Printf("⚠️ Failed to delete batch of %d blocks: %v", len(uris), err)
+		bp.warnf("WARN: failed to delete batch of %d blocks: %v", len(uris), err)
 	} else {
-		// bp.p.logger.Printf("🔓 Deleted %d blocks in batch", len(uris))
+		bp.logf("Deleted %d blocks", len(uris))
 	}
 }
 
-// Close shuts down the BlockProcessor.
-func (bp *BlockProcessor) Close() {
-	bp.closeOnce.Do(func() {
-		close(bp.stopCh)
-		bp.ticker.Stop()
-		bp.flushBlocks()
-		bp.flushDeletes()
-	})
+// ==================== Logging ====================
+
+func (bp *BlockProcessor) logf(format string, args ...interface{}) {
+	if bp.verbose {
+		bp.p.logger.Printf(format, args...)
+	}
+}
+
+func (bp *BlockProcessor) warnf(format string, args ...interface{}) {
+	bp.p.logger.Printf(format, args...)
 }

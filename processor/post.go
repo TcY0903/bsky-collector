@@ -17,29 +17,46 @@ import (
 	"bsky-collector/models"
 )
 
+// ==================== Types ====================
+
 // PostProcessor handles batch processing of post events.
 type PostProcessor struct {
 	p           *Processor
 	mediaParser *MediaParser
+
 	postBatch   []*models.Post
 	deleteBatch []string
 	batchMu     sync.Mutex
-	batchSize   int
-	ticker      *time.Ticker
-	stopCh      chan struct{}
-	closeOnce   sync.Once
+
+	batchSize int // post batch threshold; delete uses batchSize/5
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	verbose   bool
 }
 
-// NewPostProcessor creates a new PostProcessor.
+// ==================== Lifecycle ====================
+
+// NewPostProcessor creates a new PostProcessor using shared processor config.
 func NewPostProcessor(p *Processor) *PostProcessor {
+	batchSize := p.cfg.ProcessorBatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	tickerSec := p.cfg.ProcessorTickerSec
+	if tickerSec <= 0 {
+		tickerSec = 3
+	}
+
 	pp := &PostProcessor{
 		p:           p,
 		mediaParser: NewMediaParser(p.logger),
-		postBatch:   make([]*models.Post, 0, 500),
-		deleteBatch: make([]string, 0, 100),
-		batchSize:   500,
-		ticker:      time.NewTicker(3 * time.Second),
+		postBatch:   make([]*models.Post, 0, batchSize),
+		deleteBatch: make([]string, 0, batchSize/5),
+		batchSize:   batchSize,
+		ticker:      time.NewTicker(time.Duration(tickerSec) * time.Second),
 		stopCh:      make(chan struct{}),
+		verbose:     p.cfg.PostProcessorVerbose,
 	}
 	go pp.autoFlush()
 	return pp
@@ -57,6 +74,18 @@ func (pp *PostProcessor) autoFlush() {
 	}
 }
 
+// Close shuts down the PostProcessor.
+func (pp *PostProcessor) Close() {
+	pp.closeOnce.Do(func() {
+		close(pp.stopCh)
+		pp.ticker.Stop()
+		pp.flushPosts()
+		pp.flushDeletes()
+	})
+}
+
+// ==================== Dispatch ====================
+
 // ProcessPost processes a post event (create, update, or delete).
 func (pp *PostProcessor) ProcessPost(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	switch op.Action {
@@ -71,7 +100,8 @@ func (pp *PostProcessor) ProcessPost(commit *atproto.SyncSubscribeRepos_Commit, 
 	}
 }
 
-// handleCreate handles a post creation event.
+// ==================== Handlers ====================
+
 func (pp *PostProcessor) handleCreate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	post, err := pp.buildPost(commit, op)
 	if err != nil {
@@ -79,56 +109,31 @@ func (pp *PostProcessor) handleCreate(commit *atproto.SyncSubscribeRepos_Commit,
 	}
 	post.Status = "active"
 	post.NeedActor = true
-
-	pp.batchMu.Lock()
-	pp.postBatch = append(pp.postBatch, post)
-	if len(pp.postBatch) >= pp.batchSize {
-		batch := pp.postBatch
-		pp.postBatch = make([]*models.Post, 0, pp.batchSize)
-		pp.batchMu.Unlock()
-		pp.flushPostsWithBatch(batch)
-	} else {
-		pp.batchMu.Unlock()
-	}
-
+	pp.addToPostBatch(post)
 	return nil
 }
 
-// handleUpdate handles a post update event.
 func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
 
-	// Check if the post exists in our database
 	existingPost, err := pp.p.db.GetPostByURI(uri)
 	if err != nil {
 		return err
 	}
 
+	// Case 1: Post was created before we started listening
 	if existingPost == nil {
-		// Post was created before we started listening.
-		//pp.p.logger.Printf("Update unknown post (created before startup): %s", uri)
 		post, err := pp.buildPost(commit, op)
 		if err != nil {
 			return err
 		}
 		post.Status = "updated"
 		post.NeedActor = true
-
-		// Add to batch for enrichment and saving
-		pp.batchMu.Lock()
-		pp.postBatch = append(pp.postBatch, post)
-		if len(pp.postBatch) >= pp.batchSize {
-			batch := pp.postBatch
-			pp.postBatch = make([]*models.Post, 0, pp.batchSize)
-			pp.batchMu.Unlock()
-			pp.flushPostsWithBatch(batch)
-		} else {
-			pp.batchMu.Unlock()
-		}
+		pp.addToPostBatch(post)
 		return nil
 	}
 
-	// Build the new version
+	// Case 2: Post exists; archive old version and save new one
 	newPost, err := pp.buildPost(commit, op)
 	if err != nil {
 		return err
@@ -136,7 +141,6 @@ func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit,
 	newPost.Status = "updated"
 	newPost.NeedActor = false
 
-	// Archive the old version to history
 	history := &models.PostHistory{
 		PostURI:     existingPost.URI,
 		CID:         existingPost.Cid,
@@ -149,28 +153,14 @@ func (pp *PostProcessor) handleUpdate(commit *atproto.SyncSubscribeRepos_Commit,
 		Status:      "updated",
 		ValidTo:     time.Now().UTC(),
 	}
-
 	if err := pp.p.db.SavePostHistory(history); err != nil {
-		pp.p.logger.Printf("⚠️ Failed to save history for %s: %v", uri, err)
+		pp.warnf("WARN: failed to save history for %s: %v", uri, err)
 	}
 
-	// Add the new version to batch
-	pp.batchMu.Lock()
-	pp.postBatch = append(pp.postBatch, newPost)
-	if len(pp.postBatch) >= pp.batchSize {
-		batch := pp.postBatch
-		pp.postBatch = make([]*models.Post, 0, pp.batchSize)
-		pp.batchMu.Unlock()
-		pp.flushPostsWithBatch(batch)
-	} else {
-		pp.batchMu.Unlock()
-	}
-
-	//pp.p.logger.Printf("Updated post: %s", uri)
+	pp.addToPostBatch(newPost)
 	return nil
 }
 
-// handleDelete handles a post deletion event.
 func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) error {
 	uri := fmt.Sprintf("at://%s/%s", commit.Repo, op.Path)
 
@@ -178,13 +168,10 @@ func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit,
 	if err != nil {
 		return err
 	}
-
 	if existingPost == nil {
-		// Post was deleted but created before startup
 		return nil
 	}
 
-	// Archive the deleted version to history
 	history := &models.PostHistory{
 		PostURI:     existingPost.URI,
 		CID:         existingPost.Cid,
@@ -197,12 +184,10 @@ func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit,
 		Status:      "deleted",
 		ValidTo:     time.Now().UTC(),
 	}
-
 	if err := pp.p.db.SavePostHistory(history); err != nil {
-		pp.p.logger.Printf("⚠️ Failed to save history for %s: %v", uri, err)
+		pp.warnf("WARN: failed to save history for %s: %v", uri, err)
 	}
 
-	// Add to delete batch
 	pp.batchMu.Lock()
 	pp.deleteBatch = append(pp.deleteBatch, uri)
 	if len(pp.deleteBatch) >= pp.batchSize/5 {
@@ -213,11 +198,25 @@ func (pp *PostProcessor) handleDelete(commit *atproto.SyncSubscribeRepos_Commit,
 	} else {
 		pp.batchMu.Unlock()
 	}
-
 	return nil
 }
 
-// buildPost creates a Post model from Firehose data (without enriching).
+// addToPostBatch appends a post to the batch, flushing if full.
+func (pp *PostProcessor) addToPostBatch(post *models.Post) {
+	pp.batchMu.Lock()
+	pp.postBatch = append(pp.postBatch, post)
+	if len(pp.postBatch) >= pp.batchSize {
+		batch := pp.postBatch
+		pp.postBatch = make([]*models.Post, 0, pp.batchSize)
+		pp.batchMu.Unlock()
+		pp.flushPostsWithBatch(batch)
+	} else {
+		pp.batchMu.Unlock()
+	}
+}
+
+// ==================== Build ====================
+
 func (pp *PostProcessor) buildPost(commit *atproto.SyncSubscribeRepos_Commit, op *atproto.SyncSubscribeRepos_RepoOp) (*models.Post, error) {
 	parts := strings.Split(op.Path, "/")
 	if len(parts) != 2 {
@@ -239,18 +238,17 @@ func (pp *PostProcessor) buildPost(commit *atproto.SyncSubscribeRepos_Commit, op
 		NeedActor:  false,
 	}
 
-	// Store payload for later enrichment
 	blocksBase64 := base64.StdEncoding.EncodeToString(commit.Blocks)
-	ops := []map[string]string{}
+	ops := make([]map[string]string, 0, len(commit.Ops))
 	for _, o := range commit.Ops {
-		o_cid := ""
+		oCID := ""
 		if o.Cid != nil {
-			o_cid = o.Cid.String()
+			oCID = o.Cid.String()
 		}
 		ops = append(ops, map[string]string{
 			"action": o.Action,
 			"path":   o.Path,
-			"cid":    o_cid,
+			"cid":    oCID,
 		})
 	}
 
@@ -269,7 +267,8 @@ func (pp *PostProcessor) buildPost(commit *atproto.SyncSubscribeRepos_Commit, op
 	return post, nil
 }
 
-// enrichPosts parses CAR files and extracts post content.
+// ==================== Enrichment ====================
+
 func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 	for _, post := range posts {
 		var commit struct {
@@ -285,7 +284,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			BlocksBase64 string `json:"blocks_base64"`
 		}
 		if err := json.Unmarshal(post.Payload, &commit); err != nil {
-			pp.p.logger.Printf("⚠️ Failed to unmarshal commit for post %s: %v", post.RKey, err)
+			pp.warnf("WARN: failed to unmarshal commit for post %s: %v", post.RKey, err)
 			continue
 		}
 		if commit.BlocksBase64 == "" {
@@ -293,7 +292,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 		}
 		blocksData, err := base64.StdEncoding.DecodeString(commit.BlocksBase64)
 		if err != nil {
-			pp.p.logger.Printf("⚠️ Failed to decode base64 blocks for post %s: %v", post.RKey, err)
+			pp.warnf("WARN: failed to decode base64 blocks for post %s: %v", post.RKey, err)
 			continue
 		}
 		targetCID := post.Cid
@@ -302,9 +301,10 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 		}
 		blockReader, err := car.NewBlockReader(bytes.NewReader(blocksData))
 		if err != nil {
-			pp.p.logger.Printf("⚠️ Failed to create block reader for post %s: %v", post.RKey, err)
+			pp.warnf("WARN: failed to create block reader for post %s: %v", post.RKey, err)
 			continue
 		}
+
 		var text, replyParent, replyRoot string
 		var createdAt time.Time
 		var mediaData []byte
@@ -319,7 +319,7 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			}
 			var record map[string]interface{}
 			if err := cbor.Unmarshal(block.RawData(), &record); err != nil {
-				pp.p.logger.Printf("⚠️ Failed to decode CBOR for post %s: %v", post.RKey, err)
+				pp.warnf("WARN: failed to decode CBOR for post %s: %v", post.RKey, err)
 				break
 			}
 			if t, ok := record["text"].(string); ok {
@@ -331,60 +331,10 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 				}
 			}
 
-			// Parse reply information
-			if replyVal, ok := record["reply"]; ok {
-				replyMap := make(map[string]interface{})
-				switch v := replyVal.(type) {
-				case map[string]interface{}:
-					replyMap = v
-				case map[interface{}]interface{}:
-					for key, val := range v {
-						if strKey, ok := key.(string); ok {
-							replyMap[strKey] = val
-						}
-					}
-				default:
-					break
-				}
-				if parent, ok := replyMap["parent"]; ok {
-					parentMap := make(map[string]interface{})
-					switch v := parent.(type) {
-					case map[string]interface{}:
-						parentMap = v
-					case map[interface{}]interface{}:
-						for key, val := range v {
-							if strKey, ok := key.(string); ok {
-								parentMap[strKey] = val
-							}
-						}
-					}
-					if uri, ok := parentMap["uri"].(string); ok {
-						replyParent = sanitizeText(uri)
-					}
-				}
-				if root, ok := replyMap["root"]; ok {
-					rootMap := make(map[string]interface{})
-					switch v := root.(type) {
-					case map[string]interface{}:
-						rootMap = v
-					case map[interface{}]interface{}:
-						for key, val := range v {
-							if strKey, ok := key.(string); ok {
-								rootMap[strKey] = val
-							}
-						}
-					}
-					if uri, ok := rootMap["uri"].(string); ok {
-						replyRoot = sanitizeText(uri)
-					}
-				}
-			}
-
-			// Parse media (embed)
+			replyParent, replyRoot = extractReplyRefs(record)
 			if embedVal, ok := record["embed"]; ok {
 				mediaData = pp.mediaParser.ParseEmbed(embedVal, post.DID)
 			}
-
 			break
 		}
 
@@ -399,7 +349,33 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 	}
 }
 
-// flushPosts flushes pending post batch.
+// extractReplyRefs extracts parent and root URIs from a post record.
+func extractReplyRefs(record map[string]interface{}) (parent, root string) {
+	replyVal, ok := record["reply"]
+	if !ok {
+		return "", ""
+	}
+
+	replyMap := toMapStringInterface(replyVal)
+	if replyMap == nil {
+		return "", ""
+	}
+
+	if pv := toMapStringInterface(replyMap["parent"]); pv != nil {
+		if uri, ok := pv["uri"].(string); ok {
+			parent = sanitizeText(uri)
+		}
+	}
+	if rv := toMapStringInterface(replyMap["root"]); rv != nil {
+		if uri, ok := rv["uri"].(string); ok {
+			root = sanitizeText(uri)
+		}
+	}
+	return parent, root
+}
+
+// ==================== Flush ====================
+
 func (pp *PostProcessor) flushPosts() {
 	pp.batchMu.Lock()
 	if len(pp.postBatch) == 0 {
@@ -420,11 +396,11 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 	pp.enrichPosts(batch)
 
 	if err := pp.p.db.SavePostsBatch(batch); err != nil {
-		pp.p.logger.Printf("WARN: failed to save batch of %d posts: %v", len(batch), err)
+		pp.warnf("WARN: failed to save batch of %d posts: %v", len(batch), err)
 		return
 	}
+	pp.logf("Saved %d posts", len(batch))
 
-	// Queue actors
 	if pp.p.actorFetcher != nil {
 		needActor := make([]*models.Post, 0)
 		for _, post := range batch {
@@ -438,7 +414,6 @@ func (pp *PostProcessor) flushPostsWithBatch(batch []*models.Post) {
 	}
 }
 
-// flushDeletes flushes pending delete batch.
 func (pp *PostProcessor) flushDeletes() {
 	pp.batchMu.Lock()
 	if len(pp.deleteBatch) == 0 {
@@ -452,25 +427,25 @@ func (pp *PostProcessor) flushDeletes() {
 	pp.flushDeletesWithBatch(batch)
 }
 
-// flushDeletesWithBatch marks multiple posts as deleted in a single transaction.
 func (pp *PostProcessor) flushDeletesWithBatch(uris []string) {
 	if len(uris) == 0 {
 		return
 	}
-
 	if err := pp.p.db.DeletePostsBatch(uris); err != nil {
-		pp.p.logger.Printf("⚠️ Failed to delete batch of %d posts: %v", len(uris), err)
+		pp.warnf("WARN: failed to delete batch of %d posts: %v", len(uris), err)
 	} else {
-		//pp.p.logger.Printf("🗑️ Deleted %d posts in batch", len(uris))
+		pp.logf("Deleted %d posts", len(uris))
 	}
 }
 
-// Close shuts down the PostProcessor.
-func (pp *PostProcessor) Close() {
-	pp.closeOnce.Do(func() {
-		close(pp.stopCh)
-		pp.ticker.Stop()
-		pp.flushPosts()
-		pp.flushDeletes()
-	})
+// ==================== Logging ====================
+
+func (pp *PostProcessor) logf(format string, args ...interface{}) {
+	if pp.verbose {
+		pp.p.logger.Printf(format, args...)
+	}
+}
+
+func (pp *PostProcessor) warnf(format string, args ...interface{}) {
+	pp.p.logger.Printf(format, args...)
 }

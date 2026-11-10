@@ -12,25 +12,41 @@ import (
 	"bsky-collector/models"
 )
 
+// ==================== Types ====================
+
 // LabelProcessor handles batch processing of labels from the aggregator.
 type LabelProcessor struct {
 	p          *Processor
 	labelBatch []*models.Label
 	batchMu    sync.Mutex
-	batchSize  int
-	ticker     *time.Ticker
-	stopCh     chan struct{}
-	closeOnce  sync.Once
+
+	batchSize int
+	ticker    *time.Ticker
+	stopCh    chan struct{}
+	closeOnce sync.Once
+	verbose   bool
 }
 
-// NewLabelProcessor creates a new LabelProcessor.
+// ==================== Lifecycle ====================
+
+// NewLabelProcessor creates a new LabelProcessor using shared processor config.
 func NewLabelProcessor(p *Processor) *LabelProcessor {
+	batchSize := p.cfg.ProcessorBatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	tickerSec := p.cfg.ProcessorTickerSec
+	if tickerSec <= 0 {
+		tickerSec = 3
+	}
+
 	lp := &LabelProcessor{
 		p:          p,
-		labelBatch: make([]*models.Label, 0, 500),
-		batchSize:  500,
-		ticker:     time.NewTicker(3 * time.Second),
+		labelBatch: make([]*models.Label, 0, batchSize),
+		batchSize:  batchSize,
+		ticker:     time.NewTicker(time.Duration(tickerSec) * time.Second),
 		stopCh:     make(chan struct{}),
+		verbose:    p.cfg.LabelProcessorVerbose,
 	}
 	go lp.autoFlush()
 	return lp
@@ -46,6 +62,17 @@ func (lp *LabelProcessor) autoFlush() {
 		}
 	}
 }
+
+// Close shuts down the LabelProcessor.
+func (lp *LabelProcessor) Close() {
+	lp.closeOnce.Do(func() {
+		close(lp.stopCh)
+		lp.ticker.Stop()
+		lp.flushLabels()
+	})
+}
+
+// ==================== Processing ====================
 
 // ProcessLabelMessage parses a raw message from the label aggregator.
 func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
@@ -167,6 +194,8 @@ func extractDIDFromURI(uri string) string {
 	return ""
 }
 
+// ==================== Flush ====================
+
 func (lp *LabelProcessor) flushLabels() {
 	lp.batchMu.Lock()
 	if len(lp.labelBatch) == 0 {
@@ -184,20 +213,25 @@ func (lp *LabelProcessor) flushLabelsWithBatch(batch []*models.Label) {
 		return
 	}
 	if err := lp.p.db.SaveLabelsBatch(batch); err != nil {
-		lp.p.logger.Printf("WARN: failed to save batch of %d labels: %v", len(batch), err)
+		lp.warnf("WARN: failed to save batch of %d labels: %v", len(batch), err)
+	} else {
+		lp.logf("Saved %d labels", len(batch))
 	}
 }
 
-// Close shuts down the LabelProcessor.
-func (lp *LabelProcessor) Close() {
-	lp.closeOnce.Do(func() {
-		close(lp.stopCh)
-		lp.ticker.Stop()
-		lp.flushLabels()
-	})
+// ==================== Logging ====================
+
+func (lp *LabelProcessor) logf(format string, args ...interface{}) {
+	if lp.verbose {
+		lp.p.logger.Printf(format, args...)
+	}
 }
 
-// --- helpers ---
+func (lp *LabelProcessor) warnf(format string, args ...interface{}) {
+	lp.p.logger.Printf(format, args...)
+}
+
+// ==================== Helpers ====================
 
 func getString(m map[interface{}]interface{}, key string) string {
 	if v, ok := m[key].(string); ok {
