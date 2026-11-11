@@ -40,14 +40,14 @@ func main() {
 	// Firehose client
 	firehoseClient := stream.NewFirehoseClient(cfg, logger)
 	go func() {
-		logger.Printf("Starting Firehose client with auto-reconnect...")
+		logger.Printf("Starting Firehose client...")
 		firehoseClient.StartWithRetry(ctx)
 	}()
 
 	// Label aggregator
 	labelAggregator := stream.NewLabelAggregator(cfg, logger, db)
 	go func() {
-		logger.Printf("Starting label aggregator with auto-reconnect...")
+		logger.Printf("Starting label aggregator...")
 		labelAggregator.StartWithRetry(ctx)
 	}()
 	defer labelAggregator.Close()
@@ -62,7 +62,6 @@ func main() {
 		go reportDBStats(db, logger, cfg.StatsIntervalSec, ctx)
 	}
 
-	logger.Printf("Starting event processing...")
 	eventCount := 0
 	labelCount := 0
 

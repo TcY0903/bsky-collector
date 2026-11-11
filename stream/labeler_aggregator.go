@@ -94,8 +94,6 @@ func (a *LabelAggregator) StartWithRetry(ctx context.Context) {
 	a.loadFromDatabase(st)
 	a.loadFromCSV(st)
 
-	a.logger.Printf("Starting with %d labelers in queue", len(st.orderedDIDs))
-
 	// Firehose listener for discovery (with exponential backoff)
 	go a.runFirehoseListener(ctx, st)
 
@@ -177,7 +175,6 @@ func (a *LabelAggregator) runFirehoseListener(ctx context.Context, st *labelerSt
 		default:
 		}
 
-		a.logger.Println("Connecting to Firehose (label discovery)...")
 		err := a.listenFirehoseOnce(ctx, st)
 
 		select {
