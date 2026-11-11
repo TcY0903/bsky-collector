@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+
+main
+
+# Database
+data/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+*.md
