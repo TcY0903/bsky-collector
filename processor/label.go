@@ -78,15 +78,24 @@ func (lp *LabelProcessor) Close() {
 func (lp *LabelProcessor) ProcessLabelMessage(message []byte) error {
 	dec := cbor.NewDecoder(bytes.NewReader(message))
 
-	var header map[string]interface{}
-	if err := dec.Decode(&header); err != nil {
-		return fmt.Errorf("header decode failed: %w", err)
+	// First item: frame header. standard format: {"op": 1, "t": "#labels"}.
+	var first interface{}
+	if err := dec.Decode(&first); err != nil {
+		return fmt.Errorf("first decode failed: %w", err)
 	}
 
+	header, ok := first.(map[interface{}]interface{})
+	if !ok {
+		// Not a map: skip this frame silently.
+		return nil
+	}
+
+	// Check frame type
 	if t, _ := header["t"].(string); t != "#labels" {
 		return nil
 	}
 
+	// Second item: payload
 	var payload interface{}
 	if err := dec.Decode(&payload); err != nil {
 		return fmt.Errorf("payload decode failed: %w", err)

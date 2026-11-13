@@ -41,6 +41,7 @@ type labelerState struct {
 	orderedDIDs  []string
 	resolveFails map[string]int
 	connectFails map[string]int
+	lastAttempt  map[string]time.Time
 	sem          chan struct{}
 }
 
@@ -52,6 +53,7 @@ func newLabelerState(maxConcurrent int) *labelerState {
 		labelers:     make(map[string]bool),
 		resolveFails: make(map[string]int),
 		connectFails: make(map[string]int),
+		lastAttempt:  make(map[string]time.Time),
 		sem:          make(chan struct{}, maxConcurrent),
 	}
 }
@@ -110,7 +112,9 @@ func (a *LabelAggregator) StartWithRetry(ctx context.Context) {
 	// Periodic connection loop
 	go a.runConnectionLoop(ctx, st)
 
-	// Block until shutdown
+	// Periodic connected-labeler report
+	go a.runConnectedReportLoop(ctx, st)
+
 	select {
 	case <-ctx.Done():
 	case <-a.stopCh:
@@ -341,6 +345,10 @@ func (a *LabelAggregator) connectNextBatch(ctx context.Context, st *labelerState
 // ==================== Labeler Connection ====================
 
 func (a *LabelAggregator) connectToLabeler(ctx context.Context, st *labelerState, did string) {
+	st.mu.Lock()
+	st.lastAttempt[did] = time.Now()
+	st.mu.Unlock()
+
 	endpoint, err := resolveLabelerEndpoint(ctx, did)
 	if err != nil {
 		a.recordFailure(st, did, "resolve", err.Error(), a.cfg.LabelAggregatorMaxResolveFailures)
@@ -411,12 +419,10 @@ func (a *LabelAggregator) recordFailure(st *labelerState, did, failureType, last
 	failCount := failures[did]
 
 	var status string
-	if failCount >= maxFailures {
-		if failureType == "resolve" {
-			status = "resolve_failed"
-		} else {
-			status = "connect_failed"
-		}
+	if failureType == "resolve" && failCount >= maxFailures {
+		status = "resolve_failed"
+	} else if failureType == "connect" && failCount >= maxFailures {
+		status = "connect_failed"
 	} else {
 		status = "unknown"
 	}
@@ -430,6 +436,61 @@ func (a *LabelAggregator) recordFailure(st *labelerState, did, failureType, last
 	}
 
 	moveToEnd(did, &st.orderedDIDs)
+}
+
+// runConnectedReportLoop periodically logs how many labelers are currently connected.
+func (a *LabelAggregator) runConnectedReportLoop(ctx context.Context, st *labelerState) {
+	intervalSec := a.cfg.StatsIntervalSec
+	if intervalSec <= 0 {
+		intervalSec = 10
+	}
+	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.printConnectedLabelers(st)
+		}
+	}
+}
+
+// printConnectedLabelers logs the number of connected labelers and their DIDs.
+func (a *LabelAggregator) printConnectedLabelers(st *labelerState) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	now := time.Now()
+	connected := 0
+	pending := 0
+	neverAttempted := 0
+	stale := 0
+	resolveFailed := len(st.resolveFails)
+
+	for did, isConnected := range st.labelers {
+		if isConnected {
+			connected++
+			continue
+		}
+		pending++
+		last, ok := st.lastAttempt[did]
+		if !ok {
+			neverAttempted++
+		} else if now.Sub(last) > 30*time.Minute {
+			stale++
+		}
+	}
+
+	a.logger.Printf(
+		"LABELERS | connected=%d, pending=%d, total=%d | \n"+
+			"    stale_30m=%d, never_attempted=%d, resolve_failed=%d",
+		connected, pending, connected+pending,
+		stale, neverAttempted, resolveFailed,
+	)
 }
 
 // ==================== Helpers ====================

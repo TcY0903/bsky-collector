@@ -233,7 +233,7 @@ func (pf *PostFetcher) getJSON(apiURL string, out interface{}) bool {
 		return false
 	}
 	if resp.StatusCode != http.StatusOK {
-		pf.warnf("WARN: HTTP %d for %s", resp.StatusCode, apiURL)
+		pf.logf("HTTP %d for %s", resp.StatusCode, apiURL)
 		return false
 	}
 
