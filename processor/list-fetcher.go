@@ -35,7 +35,7 @@ type ListFetcher struct {
 func NewListFetcher(p *Processor) *ListFetcher {
 	return &ListFetcher{
 		p:       p,
-		queue:   make(chan string, 1000),
+		queue:   make(chan string, 10000),
 		stopCh:  make(chan struct{}),
 		client:  &http.Client{Timeout: 10 * time.Second},
 		sem:     make(chan struct{}, 5),
@@ -91,6 +91,16 @@ func (lf *ListFetcher) QueueListURI(uri string) {
 	default:
 		lf.warnf("WARN: list queue full, skipping %s", uri)
 	}
+}
+
+// QueueDepth returns the number of pending list fetch URIs.
+func (lf *ListFetcher) QueueDepth() int {
+	return len(lf.queue)
+}
+
+// QueueCapacity returns the capacity of the list fetch queue.
+func (lf *ListFetcher) QueueCapacity() int {
+	return cap(lf.queue)
 }
 
 // ==================== Logging ====================

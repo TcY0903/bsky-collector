@@ -43,7 +43,7 @@ type ActorFetcher struct {
 func NewActorFetcher(p *Processor) *ActorFetcher {
 	return &ActorFetcher{
 		p:         p,
-		queue:     make(chan string, 5000),
+		queue:     make(chan string, 10000),
 		stopCh:    make(chan struct{}),
 		batchSize: actorBatchSize,
 		ticker:    time.NewTicker(actorTickerSec * time.Second),
@@ -117,6 +117,16 @@ func (af *ActorFetcher) QueueActorsForPosts(posts []*models.Post) {
 			af.QueueDID(post.DID)
 		}
 	}
+}
+
+// QueueDepth returns the number of pending actor DIDs.
+func (af *ActorFetcher) QueueDepth() int {
+	return len(af.queue)
+}
+
+// QueueCapacity returns the capacity of the actor fetch queue.
+func (af *ActorFetcher) QueueCapacity() int {
+	return cap(af.queue)
 }
 
 // ==================== Logging ====================

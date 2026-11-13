@@ -64,7 +64,7 @@ func NewPostFetcher(p *Processor) *PostFetcher {
 
 	return &PostFetcher{
 		p:                  p,
-		queue:              make(chan fetchTask, 5000),
+		queue:              make(chan fetchTask, 10000),
 		stopCh:             make(chan struct{}),
 		client:             &http.Client{Timeout: 30 * time.Second},
 		sem:                make(chan struct{}, maxConcurrent),
@@ -125,6 +125,16 @@ func (pf *PostFetcher) QueueURIWithDepth(uri string, depth int) {
 
 func (pf *PostFetcher) FetchThreadContext(uri string) {
 	pf.enqueue(fetchTask{URI: uri, Depth: 0, Context: true})
+}
+
+// QueueDepth returns the number of pending fetch tasks.
+func (pf *PostFetcher) QueueDepth() int {
+	return len(pf.queue)
+}
+
+// QueueCapacity returns the capacity of the fetch queue.
+func (pf *PostFetcher) QueueCapacity() int {
+	return cap(pf.queue)
 }
 
 // ==================== Queue Management ====================

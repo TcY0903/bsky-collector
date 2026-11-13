@@ -85,6 +85,16 @@ func (a *LabelAggregator) Close() {
 	})
 }
 
+// QueueDepth returns the number of label messages currently buffered.
+func (a *LabelAggregator) QueueDepth() int {
+	return len(a.eventCh)
+}
+
+// QueueCapacity returns the capacity of the label event channel.
+func (a *LabelAggregator) QueueCapacity() int {
+	return cap(a.eventCh)
+}
+
 // ==================== Startup ====================
 
 // StartWithRetry starts the aggregator and blocks until the context is cancelled.

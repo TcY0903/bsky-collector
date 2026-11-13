@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,6 +63,9 @@ func main() {
 		go reportDBStats(db, logger, cfg.StatsIntervalSec, ctx)
 	}
 
+	// Main loop rate reporting
+	go reportMainLoopRate(logger, cfg.StatsIntervalSec, ctx, firehoseClient, labelAggregator, proc)
+
 	eventCount := 0
 	labelCount := 0
 
@@ -85,6 +89,7 @@ func main() {
 				continue
 			}
 			eventCount++
+			mainLoopCounter.Add(1)
 
 		case message, ok := <-labelAggregator.Events():
 			if !ok {
@@ -130,6 +135,49 @@ func reportDBStats(db *storage.DB, logger *log.Logger, interval int, ctx context
 				stats["total_list_items"],
 				stats["total_list_blocks"],
 				stats["total_labelers"],
+			)
+		}
+	}
+}
+
+var mainLoopCounter atomic.Int64
+
+func reportMainLoopRate(
+	logger *log.Logger,
+	intervalSec int,
+	ctx context.Context,
+	firehoseClient *stream.FirehoseClient,
+	labelAggregator *stream.LabelAggregator,
+	proc *processor.Processor,
+) {
+	if intervalSec <= 0 {
+		intervalSec = 10
+	}
+	ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+	defer ticker.Stop()
+
+	var last int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			current := mainLoopCounter.Load()
+			delta := current - last
+			last = current
+			rate := float64(delta) / float64(intervalSec)
+
+			postDepth, postCap, listDepth, listCap, actorDepth, actorCap := proc.FetcherQueueStats()
+
+			logger.Printf(
+				"MAIN_LOOP %ds | processed=%d (%.1f/s) | \n"+
+					"    queue: firehose = %d/%d, labels = %d/%d, post_fetch = %d/%d, list_fetch = %d/%d, actor_fetch = %d/%d",
+				intervalSec, delta, rate,
+				firehoseClient.QueueDepth(), firehoseClient.QueueCapacity(),
+				labelAggregator.QueueDepth(), labelAggregator.QueueCapacity(),
+				postDepth, postCap,
+				listDepth, listCap,
+				actorDepth, actorCap,
 			)
 		}
 	}

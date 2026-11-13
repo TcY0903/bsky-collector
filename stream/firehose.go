@@ -204,3 +204,13 @@ func (c *FirehoseClient) Events() <-chan *events.XRPCStreamEvent {
 func (c *FirehoseClient) Errors() <-chan error {
 	return c.errorCh
 }
+
+// QueueDepth returns the number of events currently buffered but not yet consumed.
+func (c *FirehoseClient) QueueDepth() int {
+	return len(c.eventCh)
+}
+
+// QueueCapacity returns the capacity of the event channel.
+func (c *FirehoseClient) QueueCapacity() int {
+	return cap(c.eventCh)
+}

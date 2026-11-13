@@ -402,6 +402,24 @@ func (p *Processor) recordOtherEvent() {
 	p.statsMu.Unlock()
 }
 
+// ==================== Queue Stats ====================
+// FetcherQueueStats returns (depth, capacity) for each fetcher queue.
+func (p *Processor) FetcherQueueStats() (postDepth, postCap, listDepth, listCap, actorDepth, actorCap int) {
+	if p.postFetcher != nil {
+		postDepth = p.postFetcher.QueueDepth()
+		postCap = p.postFetcher.QueueCapacity()
+	}
+	if p.listFetcher != nil {
+		listDepth = p.listFetcher.QueueDepth()
+		listCap = p.listFetcher.QueueCapacity()
+	}
+	if p.actorFetcher != nil {
+		actorDepth = p.actorFetcher.QueueDepth()
+		actorCap = p.actorFetcher.QueueCapacity()
+	}
+	return
+}
+
 // ==================== Stats Loop ====================
 
 func (p *Processor) runStatsLoop() {
