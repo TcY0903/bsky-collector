@@ -13,6 +13,9 @@ import (
 	"bsky-collector/models"
 )
 
+// actorPushRate limits how many actor DIDs ListFetcher may enqueue per second.
+const actorPushRate = 50
+
 // ==================== Types ====================
 
 // ListFetcher handles fetching list information via the API.
@@ -27,20 +30,26 @@ type ListFetcher struct {
 
 	sem     chan struct{}
 	verbose bool
+
+	actorPushLimiter *time.Ticker
 }
 
 // ==================== Lifecycle ====================
 
 // NewListFetcher creates a new ListFetcher.
 func NewListFetcher(p *Processor) *ListFetcher {
-	return &ListFetcher{
-		p:       p,
-		queue:   make(chan string, 10000),
-		stopCh:  make(chan struct{}),
-		client:  &http.Client{Timeout: 10 * time.Second},
-		sem:     make(chan struct{}, 5),
-		verbose: p.cfg.ListFetcherVerbose,
+	limiter := time.NewTicker(time.Second / actorPushRate)
+
+	lf := &ListFetcher{
+		p:                p,
+		queue:            make(chan string, 1000),
+		stopCh:           make(chan struct{}),
+		client:           &http.Client{Timeout: 10 * time.Second},
+		sem:              make(chan struct{}, 5),
+		verbose:          p.cfg.ListFetcherVerbose,
+		actorPushLimiter: limiter,
 	}
+	return lf
 }
 
 // Start starts the ListFetcher worker.
@@ -64,6 +73,7 @@ func (lf *ListFetcher) Stop() {
 	}
 	lf.started = false
 	close(lf.stopCh)
+	lf.actorPushLimiter.Stop()
 	lf.mu.Unlock()
 
 	done := make(chan struct{})
@@ -231,6 +241,22 @@ func (lf *ListFetcher) fetchList(listURI string) {
 	}
 }
 
+// queueActorThrottled blocks until the global limiter allows the next push.
+// It returns false if the fetcher is shutting down.
+func (lf *ListFetcher) queueActorThrottled(did string) bool {
+	select {
+	case <-lf.actorPushLimiter.C:
+	case <-lf.stopCh:
+		return false
+	case <-lf.p.ctx.Done():
+		return false
+	}
+	if lf.p.actorFetcher != nil {
+		lf.p.actorFetcher.QueueDID(did)
+	}
+	return true
+}
+
 // ==================== Build Helpers ====================
 
 type listAPIResponse struct {
@@ -307,15 +333,22 @@ func (lf *ListFetcher) saveListItems(list *models.List, items []struct {
 		}
 
 		listItems = append(listItems, listItem)
-
-		if lf.p.actorFetcher != nil {
-			lf.p.actorFetcher.QueueDID(item.Subject.DID)
-		}
 	}
 
-	if len(listItems) > 0 {
-		if err := lf.p.db.SaveListItemsBatch(listItems); err != nil {
-			lf.warnf("WARN: failed to save %d list items for %s: %v", len(listItems), list.URI, err)
+	if len(listItems) == 0 {
+		return
+	}
+
+	if err := lf.p.db.SaveListItemsBatch(listItems); err != nil {
+		lf.warnf("WARN: failed to save %d list items for %s: %v", len(listItems), list.URI, err)
+		return
+	}
+
+	// Queue actors through the global limiter so that concurrent list fetches
+	// cannot flood the actor queue.
+	for _, item := range listItems {
+		if !lf.queueActorThrottled(item.SubjectDID) {
+			return
 		}
 	}
 }
