@@ -327,7 +327,29 @@ func (pp *PostProcessor) enrichPosts(posts []*models.Post) {
 			}
 			if c, ok := record["createdAt"].(string); ok {
 				if t, err := time.Parse(time.RFC3339, c); err == nil {
-					createdAt = t.UTC()
+					createdAtUTC := t.UTC()
+					/*
+						# Some PDSes emit `createdAt` timestamps that are physically impossible (e.g. hours in the future)
+						# due to misconfigured timezones or clocks that are not NTP-synchronized.
+						# Small skews are normal in distributed systems and must not cause data loss, so we allow a 5-minute
+						# grace period. Anything beyond that is almost certainly a timezone bug.
+							nowUTC := time.Now().UTC()
+							const maxFutureSkew = 5 * time.Minute
+							if createdAtUTC.After(nowUTC.Add(maxFutureSkew)) {
+								pp.warnf(
+									"WARN: abnormal future createdAt for post %s: raw=%q, parsed_utc=%s, now_utc=%s, delta=%s (exceeds max skew %s)",
+									post.RKey,
+									c,
+									createdAtUTC.Format(time.RFC3339Nano),
+									nowUTC.Format(time.RFC3339Nano),
+									createdAtUTC.Sub(nowUTC),
+									maxFutureSkew,
+								)
+							}
+					*/
+					createdAt = createdAtUTC
+				} else {
+					pp.warnf("WARN: failed to parse createdAt for post %s: raw=%q, err=%v", post.RKey, c, err)
 				}
 			}
 
