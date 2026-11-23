@@ -18,6 +18,24 @@ services:
       retries: 5
     networks:
       - bsky-net
+  
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: bsky-dashboard
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - bsky-net
 
   collector:
     build:
