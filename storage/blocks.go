@@ -183,3 +183,62 @@ func (db *DB) GetActiveBlocksByDID(did string) ([]*models.Block, error) {
 	}
 	return blocks, nil
 }
+
+// SearchBlocks searches blocks with exact URI, DID, and SubjectDID matches.
+func (db *DB) SearchBlocks(uri string, did string, subjectDID string, status string, limit, offset int) ([]*models.Block, error) {
+	query := `
+	SELECT id, uri, did, subject_did, rkey, cid, created_at, received_at, status
+	FROM blocks 
+	WHERE 1=1
+	`
+	args := []interface{}{}
+	argCount := 1
+
+	// Exact URI match (uses unique index)
+	if uri != "" {
+		query += fmt.Sprintf(" AND uri = $%d", argCount)
+		args = append(args, uri)
+		argCount++
+	}
+	if did != "" {
+		query += fmt.Sprintf(" AND did = $%d", argCount)
+		args = append(args, did)
+		argCount++
+	}
+	if subjectDID != "" {
+		query += fmt.Sprintf(" AND subject_did = $%d", argCount)
+		args = append(args, subjectDID)
+		argCount++
+	}
+	if status != "" {
+		query += fmt.Sprintf(" AND status = $%d", argCount)
+		args = append(args, status)
+		argCount++
+	}
+
+	query += fmt.Sprintf(" ORDER BY received_at DESC LIMIT $%d OFFSET $%d", argCount, argCount+1)
+	args = append(args, limit, offset)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search blocks: %w", err)
+	}
+	defer rows.Close()
+
+	var blocks []*models.Block
+	for rows.Next() {
+		var block models.Block
+		err := rows.Scan(
+			&block.ID, &block.URI, &block.DID, &block.SubjectDID, &block.RKey,
+			&block.CID, &block.CreatedAt, &block.ReceivedAt, &block.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan block: %w", err)
+		}
+		blocks = append(blocks, &block)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating blocks: %w", err)
+	}
+	return blocks, nil
+}

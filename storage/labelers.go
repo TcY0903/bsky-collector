@@ -8,6 +8,41 @@ import (
 	"bsky-collector/models"
 )
 
+// GetLabelerByDID retrieves a labeler by its DID.
+func (db *DB) GetLabelerByDID(did string) (*models.Labeler, error) {
+	var l models.Labeler
+	var endpoint, lastError, failureType sql.NullString
+	var lastConnected sql.NullTime
+
+	query := `
+	SELECT did, endpoint, status, failure_type, last_connected, last_error, fail_count, first_seen, updated_at
+	FROM labelers WHERE did = $1
+	`
+	err := db.conn.QueryRow(query, did).Scan(
+		&l.DID, &endpoint, &l.Status, &failureType,
+		&lastConnected, &lastError, &l.FailCount, &l.FirstSeen, &l.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get labeler: %w", err)
+	}
+	if endpoint.Valid {
+		l.Endpoint = endpoint.String
+	}
+	if lastError.Valid {
+		l.LastError = lastError.String
+	}
+	if failureType.Valid {
+		l.FailureType = failureType.String
+	}
+	if lastConnected.Valid {
+		l.LastConnected = lastConnected.Time
+	}
+	return &l, nil
+}
+
 // SaveLabeler inserts or updates a labeler record.
 func (db *DB) SaveLabeler(l *models.Labeler) error {
 	query := `
@@ -127,4 +162,76 @@ func (db *DB) UpdateLabelerConnected(did, endpoint string) error {
 func (db *DB) DeleteLabeler(did string) error {
 	_, err := db.conn.Exec(`DELETE FROM labelers WHERE did = $1`, did)
 	return err
+}
+
+// SearchLabelers searches labelers by exact DID.
+func (db *DB) SearchLabelers(did string, limit, offset int) ([]*models.Labeler, error) {
+	query := `
+	SELECT did, endpoint, status, failure_type, last_connected, last_error, fail_count, first_seen, updated_at
+	FROM labelers 
+	WHERE 1=1
+	`
+	args := []interface{}{}
+	argCount := 1
+
+	if did != "" {
+		query += fmt.Sprintf(" AND did = $%d", argCount)
+		args = append(args, did)
+		argCount++
+	}
+
+	query += `
+	ORDER BY
+		CASE status
+			WHEN 'active' THEN 0
+			WHEN 'unknown' THEN 1
+			WHEN 'connect_failed' THEN 2
+			WHEN 'resolve_failed' THEN 3
+			ELSE 4
+		END,
+		first_seen ASC
+	`
+
+	query += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argCount, argCount+1)
+	args = append(args, limit, offset)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search labelers: %w", err)
+	}
+	defer rows.Close()
+
+	var labelers []*models.Labeler
+	for rows.Next() {
+		var l models.Labeler
+		var endpoint, lastError, failureType sql.NullString
+		var lastConnected sql.NullTime
+
+		err := rows.Scan(
+			&l.DID, &endpoint, &l.Status, &failureType,
+			&lastConnected, &lastError, &l.FailCount, &l.FirstSeen, &l.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan labeler: %w", err)
+		}
+
+		if endpoint.Valid {
+			l.Endpoint = endpoint.String
+		}
+		if lastError.Valid {
+			l.LastError = lastError.String
+		}
+		if failureType.Valid {
+			l.FailureType = failureType.String
+		}
+		if lastConnected.Valid {
+			l.LastConnected = lastConnected.Time
+		}
+
+		labelers = append(labelers, &l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating labelers: %w", err)
+	}
+	return labelers, nil
 }

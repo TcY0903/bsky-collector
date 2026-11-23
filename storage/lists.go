@@ -159,6 +159,60 @@ func (db *DB) DeleteListsBatch(uris []string) error {
 	return tx.Commit()
 }
 
+// SearchLists searches lists by exact URI, exact DID, and fuzzy name.
+func (db *DB) SearchLists(uri string, did string, keyword string, limit, offset int) ([]*models.List, error) {
+	query := `
+	SELECT id, uri, did, rkey, cid, name, purpose, description, created_at, received_at, status
+	FROM lists 
+	WHERE status = 'active'
+	`
+	args := []interface{}{}
+	argCount := 1
+
+	if uri != "" {
+		query += fmt.Sprintf(" AND uri = $%d", argCount)
+		args = append(args, uri)
+		argCount++
+	}
+	if did != "" {
+		query += fmt.Sprintf(" AND did = $%d", argCount)
+		args = append(args, did)
+		argCount++
+	}
+	if keyword != "" {
+		query += fmt.Sprintf(" AND name ILIKE $%d", argCount)
+		args = append(args, "%"+keyword+"%")
+		argCount++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argCount, argCount+1)
+	args = append(args, limit, offset)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search lists: %w", err)
+	}
+	defer rows.Close()
+
+	var lists []*models.List
+	for rows.Next() {
+		var list models.List
+		err := rows.Scan(
+			&list.ID, &list.URI, &list.DID, &list.RKey, &list.CID,
+			&list.Name, &list.Purpose, &list.Description, &list.CreatedAt,
+			&list.ReceivedAt, &list.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan list: %w", err)
+		}
+		lists = append(lists, &list)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating lists: %w", err)
+	}
+	return lists, nil
+}
+
 // ==================== ListItem ====================
 
 // SaveListItem inserts or updates a list item.
@@ -306,6 +360,64 @@ func (db *DB) DeleteListItemsBatch(uris []string) error {
 	return tx.Commit()
 }
 
+// SearchListItems searches list items by exact URI, list URI, adder DID, and subject DID.
+func (db *DB) SearchListItems(uri string, listURI string, did string, subjectDID string, limit, offset int) ([]*models.ListItem, error) {
+	query := `
+	SELECT id, uri, list_uri, did, subject_did, rkey, cid, created_at, received_at, status
+	FROM list_items 
+	WHERE status = 'active'
+	`
+	args := []interface{}{}
+	argCount := 1
+
+	if uri != "" {
+		query += fmt.Sprintf(" AND uri = $%d", argCount)
+		args = append(args, uri)
+		argCount++
+	}
+	if listURI != "" {
+		query += fmt.Sprintf(" AND list_uri = $%d", argCount)
+		args = append(args, listURI)
+		argCount++
+	}
+	if did != "" {
+		query += fmt.Sprintf(" AND did = $%d", argCount)
+		args = append(args, did)
+		argCount++
+	}
+	if subjectDID != "" {
+		query += fmt.Sprintf(" AND subject_did = $%d", argCount)
+		args = append(args, subjectDID)
+		argCount++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argCount, argCount+1)
+	args = append(args, limit, offset)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search list items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*models.ListItem
+	for rows.Next() {
+		var item models.ListItem
+		err := rows.Scan(
+			&item.ID, &item.URI, &item.ListURI, &item.DID, &item.SubjectDID,
+			&item.RKey, &item.CID, &item.CreatedAt, &item.ReceivedAt, &item.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan list item: %w", err)
+		}
+		items = append(items, &item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating list items: %w", err)
+	}
+	return items, nil
+}
+
 // ==================== ListBlock ====================
 
 // SaveListBlock inserts or updates a list block.
@@ -446,4 +558,57 @@ func (db *DB) DeleteListBlocksBatch(uris []string) error {
 	}
 
 	return tx.Commit()
+}
+
+// SearchListBlocks searches list blocks by exact URI, blocker DID, and subject list.
+func (db *DB) SearchListBlocks(uri string, subjectList string, did string, limit, offset int) ([]*models.ListBlock, error) {
+	query := `
+	SELECT id, uri, did, subject_list, rkey, cid, created_at, received_at, status
+	FROM list_blocks 
+	WHERE status = 'active'
+	`
+	args := []interface{}{}
+	argCount := 1
+
+	if uri != "" {
+		query += fmt.Sprintf(" AND uri = $%d", argCount)
+		args = append(args, uri)
+		argCount++
+	}
+	if did != "" {
+		query += fmt.Sprintf(" AND did = $%d", argCount)
+		args = append(args, did)
+		argCount++
+	}
+	if subjectList != "" {
+		query += fmt.Sprintf(" AND subject_list = $%d", argCount)
+		args = append(args, subjectList)
+		argCount++
+	}
+
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argCount, argCount+1)
+	args = append(args, limit, offset)
+
+	rows, err := db.conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search list blocks: %w", err)
+	}
+	defer rows.Close()
+
+	var blocks []*models.ListBlock
+	for rows.Next() {
+		var block models.ListBlock
+		err := rows.Scan(
+			&block.ID, &block.URI, &block.DID, &block.SubjectList, &block.RKey,
+			&block.CID, &block.CreatedAt, &block.ReceivedAt, &block.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan list block: %w", err)
+		}
+		blocks = append(blocks, &block)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating list blocks: %w", err)
+	}
+	return blocks, nil
 }
