@@ -1,0 +1,86 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">Label Details</h1>
+    <div class="space-x-4">
+        <!-- Show View Thread only if the target is a Post -->
+        {{if eq .TargetType "post"}}
+        <a href="/thread?uri={{.Label.URI | urlquery}}" class="text-blue-600 hover:underline">View Thread</a>
+        {{end}}
+        <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+    </div>
+</div>
+
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="border-t border-gray-200">
+        <dl>
+            <!-- ID -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">ID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Label.ID}}</dd>
+            </div>
+
+            <!-- Src (Labeler DID) -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Src (Labeler DID)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">
+                    {{.Label.Src}}
+                    <a href="/labeler?did={{.Label.Src | urlquery}}" class="ml-2 text-blue-600 hover:underline">View Labeler</a>
+                </dd>
+            </div>
+
+            <!-- Target URI with conditional button -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Target URI</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">
+                    {{.Label.URI}}
+                    {{if eq .TargetType "post"}}
+                        <a href="/post?uri={{.Label.URI | urlquery}}" class="ml-2 text-blue-600 hover:underline">View Post</a>
+                    {{else if eq .TargetType "actor"}}
+                        <a href="/actor?did={{.Label.URI | urlquery}}" class="ml-2 text-blue-600 hover:underline">View Actor</a>
+                    {{end}}
+                </dd>
+            </div>
+
+            <!-- Label Value (Val) -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Label Value (Val)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                        {{.Label.Val}}
+                    </span>
+                </dd>
+            </div>
+
+            <!-- Negative Label (Neg) -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Negative Label (Neg)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Label.Neg}}</dd>
+            </div>
+
+            <!-- Version (Ver) -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Version (Ver)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Label.Ver}}</dd>
+            </div>
+
+            <!-- CTS (Timestamp) -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">CTS (Timestamp)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{ formatTime .Label.CTS "2006-01-02 15:04:05" }}</dd>
+            </div>
+
+            <!-- Received At -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Received At</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{ formatTime .Label.ReceivedAt "2006-01-02 15:04:05" }}</dd>
+            </div>
+
+            <!-- Seq -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Seq</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Label.Seq}}</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}

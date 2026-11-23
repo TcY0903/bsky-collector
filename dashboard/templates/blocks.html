@@ -1,0 +1,102 @@
+{{define "content"}}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl font-bold">Blocks Search</h1>
+</div>
+
+<!-- Search Form -->
+<div class="bg-white p-4 rounded-lg shadow mb-6 w-full">
+    <form method="GET" action="/blocks" class="flex flex-col gap-4 w-full">
+
+        <!-- Row 1: URI, DID, Subject DID (all exact match) -->
+        <div class="flex flex-wrap gap-4 w-full">
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">URI (exact)</label>
+                <input type="text" name="uri" value="{{.URI}}" placeholder="at://did:plc:.../app.bsky.graph.block/..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">Blocker DID (exact)</label>
+                <input type="text" name="did" value="{{.DID}}" placeholder="did:plc:..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">Subject DID (exact)</label>
+                <input type="text" name="subject_did" value="{{.SubjectDID}}" placeholder="did:plc:..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+        </div>
+
+        <!-- Row 2: Buttons -->
+        <div class="flex justify-end gap-2 w-full mt-2">
+            <a href="/blocks" class="bg-gray-200 text-gray-700 px-4 py-2 rounded shadow hover:bg-gray-300 inline-block whitespace-nowrap">
+                Reset
+            </a>
+            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 whitespace-nowrap">
+                Search
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Results Table -->
+<div class="bg-white rounded-lg shadow w-full">
+    <table class="min-w-full divide-y divide-gray-200 table-fixed">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="w-[40%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">URI</th>
+                <th class="w-[25%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Blocker DID</th>
+                <th class="w-[25%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject DID</th>
+                <th class="w-[10%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {{range .Blocks}}
+            <tr class="hover:bg-gray-50 transition-colors duration-150">
+                <!-- URI -->
+                <td class="px-2 py-4 text-sm font-medium text-blue-600 max-w-0 truncate" title="{{.URI}}">
+                    {{ truncate .URI 40 }}
+                </td>
+                <!-- DID -->
+                <td class="px-2 py-4 text-sm text-gray-900 max-w-0 truncate" title="{{.DID}}">
+                    {{ truncate .DID 25 }}
+                </td>
+                <!-- Subject DID -->
+                <td class="px-2 py-4 text-sm text-gray-900 max-w-0 truncate" title="{{.SubjectDID}}">
+                    {{ truncate .SubjectDID 25 }}
+                </td>
+                <!-- Actions -->
+                <td class="px-2 py-4 whitespace-nowrap text-sm">
+                    <a href="/block?uri={{.URI | urlquery}}" class="text-blue-600 hover:text-blue-900 font-medium">
+                        Details
+                    </a>
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="4" class="px-6 py-10 text-center text-gray-500">
+                    No blocks found matching your criteria.
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+<div class="mt-4 flex justify-between items-center w-full">
+    <div class="text-sm text-gray-600">
+        Showing limit: {{.Limit}} | Offset: {{.Offset}}
+    </div>
+    <div class="space-x-2">
+        {{if gt .Offset 0}}
+        <a href="/blocks?uri={{.URI}}&did={{.DID}}&subject_did={{.SubjectDID}}&limit={{.Limit}}&offset={{.Prev}}" 
+           class="bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded hover:bg-gray-50">Previous</a>
+        {{end}}
+        
+        {{if eq (len .Blocks) .Limit}}
+        <a href="/blocks?uri={{.URI}}&did={{.DID}}&subject_did={{.SubjectDID}}&limit={{.Limit}}&offset={{.Next}}" 
+           class="bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded hover:bg-gray-50">Next</a>
+        {{end}}
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,51 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">List Block Details</h1>
+    <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+</div>
+
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="border-t border-gray-200">
+        <dl>
+            <!-- Block URI -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Block URI</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.Block.URI}}</dd>
+            </div>
+
+            <!-- Blocker DID with View Actor button -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Blocker DID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    {{.Block.DID}}
+                    <a href="/actor?did={{.Block.DID | urlquery}}" class="ml-2 text-blue-600 hover:underline">View Actor</a>
+                </dd>
+            </div>
+
+            <!-- Subject List URI with View List button -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Subject List URI</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">
+                    {{.Block.SubjectList}}
+                    <a href="/list?uri={{.Block.SubjectList | urlquery}}" class="ml-2 text-blue-600 hover:underline">View List</a>
+                </dd>
+            </div>
+
+            <!-- Timestamps -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Timestamps</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 space-y-1">
+                    <div><span class="font-semibold text-gray-600">Created At:</span> {{ formatTime .Block.CreatedAt "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-semibold text-gray-600">Received At:</span> {{ formatTime .Block.ReceivedAt "2006-01-02 15:04:05" }}</div>
+                </dd>
+            </div>
+
+            <!-- Status -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Status</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Block.Status}}</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}

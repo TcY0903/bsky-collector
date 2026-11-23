@@ -1,0 +1,65 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">List Details</h1>
+    <div class="space-x-4">
+        <!-- Jump to List Items filtered by this list URI -->
+        <a href="/list-items?list_uri={{.URI | urlquery}}" class="text-blue-600 hover:underline">View Items</a>
+        
+        <!-- Jump to List Blocks filtered by this list URI -->
+        <a href="/list-blocks?subject_list={{.URI | urlquery}}" class="text-blue-600 hover:underline">View Blocks</a>
+        
+        <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+    </div>
+</div>
+
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+        <h3 class="text-lg leading-6 font-medium text-gray-900">{{.Name}}</h3>
+        <p class="mt-1 max-w-2xl text-sm text-gray-500">{{if .Description}}{{.Description}}{{else}}No description{{end}}</p>
+    </div>
+    <div class="border-t border-gray-200">
+        <dl>
+            <!-- List URI -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">List URI</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.URI}}</dd>
+            </div>
+            <!-- Creator DID -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Creator DID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    {{.DID}}
+                    <a href="/actor?did={{.DID | urlquery}}" class="ml-2 text-blue-600 hover:underline">View Actor</a>
+                </dd>
+            </div>
+            <!-- Purpose -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Purpose</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
+                        {{ trimPrefix .Purpose "app.bsky.graph.defs#" }}
+                    </span>
+                </dd>
+            </div>
+            <!-- CID -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">CID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.CID}}</dd>
+            </div>
+            <!-- Timestamps -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Timestamps</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 space-y-1">
+                    <div><span class="font-semibold text-gray-600">Created At:</span> {{ formatTime .CreatedAt "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-semibold text-gray-600">Received At:</span> {{ formatTime .ReceivedAt "2006-01-02 15:04:05" }}</div>
+                </dd>
+            </div>
+            <!-- Status -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Status</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.Status}}</dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}

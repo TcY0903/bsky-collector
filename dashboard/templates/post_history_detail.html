@@ -1,0 +1,205 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">Post History Record #{{.History.ID}}</h1>
+    <div class="space-x-4">
+        <!-- 链接到原帖的当前状态 -->
+        <a href="/post?uri={{.History.PostURI | urlquery}}" class="text-blue-600 hover:underline">View Current Post</a>
+        <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+    </div>
+</div>
+
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="px-4 py-5 sm:px-6 border-b border-gray-200 bg-yellow-50">
+        <h3 class="text-lg leading-6 font-medium text-gray-900">Historical Snapshot</h3>
+        <p class="mt-1 max-w-2xl text-sm text-gray-600">
+            This record represents a version of the post that was valid until 
+            <strong>{{ formatTime .History.ValidTo "2006-01-02 15:04:05" }}</strong>.
+        </p>
+    </div>
+    <div class="border-t border-gray-200">
+        <dl>
+            <!-- Post URI -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Original Post URI</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.History.PostURI}}</dd>
+            </div>
+            <!-- CID -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">CID (of this version)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.History.CID}}</dd>
+            </div>
+            <!-- Status -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Status at this time</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full {{if eq .History.Status "deleted"}}bg-red-100 text-red-800{{else}}bg-green-100 text-green-800{{end}}">
+                        {{.History.Status}}
+                    </span>
+                </dd>
+            </div>
+            <!-- Text Content -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Text (Snapshot)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 whitespace-pre-wrap">
+                    {{if .History.Text}}{{.History.Text}}{{else}}<span class="text-gray-400 italic">No text</span>{{end}}
+                </dd>
+            </div>
+
+            <!-- Media Rendering -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Media (Snapshot)</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    {{if .Media}}
+                        {{if eq .Media.Type "images"}}
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                {{range .Media.Images}}
+                                <div class="border rounded-lg overflow-hidden shadow-sm">
+                                    <img src="{{.URL}}" alt="{{.Alt}}" class="w-full h-48 object-cover" loading="lazy">
+                                    <div class="p-2 text-xs text-gray-500">
+                                        {{if .Alt}}{{.Alt}}{{else}}<span class="italic">No alt text</span>{{end}}
+                                    </div>
+                                </div>
+                                {{end}}
+                            </div>
+                        {{else if eq .Media.Type "video"}}
+                            <div class="border rounded-lg overflow-hidden shadow-sm max-w-lg">
+                                <video id="history-video-{{ .History.ID }}" class="w-full bg-black" controls playsinline>
+                                    Your browser does not support the video tag.
+                                </video>
+                                <p class="text-xs text-gray-500 p-2">
+                                    If the video cannot be played, it may be restricted content (e.g., adult content) or the video has been deleted.
+                                </p>
+                            </div>
+                            <script>
+                                (function() {
+                                    var video = document.getElementById('history-video-{{ .History.ID }}');
+                                    var url = "https://video.bsky.app/watch/{{ $.PostDID }}/{{ .Media.Video.CID }}/playlist.m3u8";
+                                    
+                                    if (Hls.isSupported()) {
+                                        var hls = new Hls();
+                                        hls.loadSource(url);
+                                        hls.attachMedia(video);
+                                        hls.on(Hls.Events.ERROR, function(event, data) {
+                                            console.error("HLS error:", data);
+                                        });
+                                    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                                        video.src = url;
+                                    }
+                                })();
+                            </script>
+                        {{else if eq .Media.Type "external"}}
+                            <div class="border rounded-lg overflow-hidden shadow-sm max-w-lg">
+                                {{if .Media.External.Thumb}}
+                                    <img src="{{.Media.External.Thumb}}" alt="Thumbnail" class="w-full h-48 object-cover">
+                                {{end}}
+                                <div class="p-4">
+                                    <a href="{{.Media.External.URI}}" target="_blank" class="text-blue-600 hover:underline font-semibold block mb-2">
+                                        {{.Media.External.Title}}
+                                    </a>
+                                    <p class="text-sm text-gray-600">{{.Media.External.Description}}</p>
+                                </div>
+                            </div>
+                        {{else if eq .Media.Type "record"}}
+                            <div class="border rounded-lg p-4 bg-gray-100 max-w-lg">
+                                <div class="text-xs text-gray-500 mb-1 uppercase tracking-wider">Quote Post</div>
+                                <a href="/post?uri={{.Media.Record.URI | urlquery}}" class="text-blue-600 hover:underline break-all">
+                                    {{.Media.Record.URI}}
+                                </a>
+                            </div>
+                        {{else if eq .Media.Type "recordWithMedia"}}
+                            <div class="space-y-4">
+                                {{if .Media.Record}}
+                                <div class="border rounded-lg p-4 bg-gray-100 max-w-lg">
+                                    <div class="text-xs text-gray-500 mb-1 uppercase tracking-wider">Quote Post</div>
+                                    <a href="/post?uri={{.Media.Record.URI | urlquery}}" class="text-blue-600 hover:underline break-all">
+                                        {{.Media.Record.URI}}
+                                    </a>
+                                </div>
+                                {{end}}
+                                
+                                {{if .Media.Images}}
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                                        {{range .Media.Images}}
+                                        <div class="border rounded-lg overflow-hidden shadow-sm">
+                                            <img src="{{.URL}}" alt="{{.Alt}}" class="w-full h-48 object-cover" loading="lazy">
+                                            <div class="p-2 text-xs text-gray-500">
+                                                {{if .Alt}}{{.Alt}}{{else}}<span class="italic">No alt text</span>{{end}}
+                                            </div>
+                                        </div>
+                                        {{end}}
+                                    </div>
+                                {{end}}
+                                
+                                {{if .Media.Video}}
+                                    <div class="border rounded-lg overflow-hidden shadow-sm max-w-lg">
+                                        <video id="history-rec-video-{{ .History.ID }}" class="w-full bg-black" controls playsinline>
+                                            Your browser does not support the video tag.
+                                        </video>
+                                        <p class="text-xs text-gray-500 p-2">
+                                            If the video cannot be played, it may be restricted content (e.g., adult content) or the video has been deleted.
+                                        </p>
+                                    </div>
+                                    <script>
+                                        (function() {
+                                            var video = document.getElementById('history-rec-video-{{ .History.ID }}');
+                                            var url = "https://video.bsky.app/watch/{{ $.PostDID }}/{{ .Media.Video.CID }}/playlist.m3u8";
+                                            
+                                            if (Hls.isSupported()) {
+                                                var hls = new Hls();
+                                                hls.loadSource(url);
+                                                hls.attachMedia(video);
+                                                hls.on(Hls.Events.ERROR, function(event, data) {
+                                                    console.error("HLS error:", data);
+                                                });
+                                            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                                                video.src = url;
+                                            }
+                                        })();
+                                    </script>
+                                {{end}}
+                                
+                                {{if .Media.External}}
+                                    <div class="border rounded-lg overflow-hidden shadow-sm max-w-lg">
+                                        {{if .Media.External.Thumb}}
+                                            <img src="{{.Media.External.Thumb}}" alt="Thumbnail" class="w-full h-48 object-cover">
+                                        {{end}}
+                                        <div class="p-4">
+                                            <a href="{{.Media.External.URI}}" target="_blank" class="text-blue-600 hover:underline font-semibold block mb-2">
+                                                {{.Media.External.Title}}
+                                            </a>
+                                            <p class="text-sm text-gray-600">{{.Media.External.Description}}</p>
+                                        </div>
+                                    </div>
+                                {{end}}
+                            </div>
+                        {{else}}
+                            <span class="text-red-500">Unknown media type: {{.Media.Type}}</span>
+                        {{end}}
+                    {{else}}
+                        <span class="text-gray-400 italic">No media</span>
+                    {{end}}
+                </dd>
+            </div>
+
+            <!-- Reply Info -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Reply Context</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    <div><span class="font-semibold text-gray-600">Parent:</span> {{if .History.ReplyParent}}{{.History.ReplyParent}}{{else}}<span class="text-gray-400 italic">None</span>{{end}}</div>
+                    <div><span class="font-semibold text-gray-600">Root:</span> {{if .History.ReplyRoot}}{{.History.ReplyRoot}}{{else}}<span class="text-gray-400 italic">None</span>{{end}}</div>
+                </dd>
+            </div>
+
+            <!-- Timestamps -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Timestamps</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 space-y-1">
+                    <div><span class="font-semibold text-gray-600">Created At (PDS):</span> {{ formatTime .History.CreatedAt "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-semibold text-gray-600">Received At:</span> {{ formatTime .History.ReceivedAt "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-bold text-gray-700">Valid To (Replaced At):</span> {{ formatTime .History.ValidTo "2006-01-02 15:04:05" }}</div>
+                </dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,43 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bsky Collector Dashboard</title>
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HLS.js for video streaming -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans flex h-screen overflow-hidden">
+
+    <!-- Sidebar -->
+    <aside class="w-64 bg-gray-900 text-white flex-shrink-0 flex flex-col h-full">
+        <div class="p-4 text-xl font-bold border-b border-gray-700">
+            Bsky Dashboard
+        </div>
+        <nav class="p-4 space-y-1 overflow-y-auto flex-1 text-sm">
+            <a href="/" class="block py-2 px-3 rounded hover:bg-gray-800">Overview</a>
+            <hr class="border-gray-700 my-2">
+            
+            <a href="/posts" class="block py-2 px-3 rounded hover:bg-gray-800">Posts</a>
+            <a href="/history" class="block py-2 px-3 rounded hover:bg-gray-800">Post Histories</a>
+            <a href="/actors" class="block py-2 px-3 rounded hover:bg-gray-800">Actors</a>
+            <a href="/blocks" class="block py-2 px-3 rounded hover:bg-gray-800">Blocks</a>
+            <a href="/labels" class="block py-2 px-3 rounded hover:bg-gray-800">Labels</a>
+            <a href="/labelers" class="block py-2 px-3 rounded hover:bg-gray-800">Labelers</a>
+            <a href="/lists" class="block py-2 px-3 rounded hover:bg-gray-800">Lists</a>
+            <a href="/list-items" class="block py-2 px-3 rounded hover:bg-gray-800">List Items</a>
+            <a href="/list-blocks" class="block py-2 px-3 rounded hover:bg-gray-800">List Blocks</a>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 p-8 overflow-y-auto h-full min-w-0">
+        {{template "content" .}}
+    </main>
+
+</body>
+</html>
+{{end}}

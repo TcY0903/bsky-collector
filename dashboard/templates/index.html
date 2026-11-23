@@ -1,0 +1,62 @@
+{{define "content"}}
+<h1 class="text-3xl font-bold mb-6">Overview Statistics</h1>
+
+<!-- Grid: 1 column on mobile, 2 on small screens, 3 on large screens -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+    <!-- 1. Posts -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Posts</h2>
+        <p class="text-3xl font-bold text-blue-600 mt-2">{{index . "total_posts"}}</p>
+    </div>
+
+    <!-- 2. Post Histories -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Post Histories</h2>
+        <p class="text-3xl font-bold text-indigo-600 mt-2">{{index . "total_history"}}</p>
+    </div>
+
+    <!-- 3. Actors -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Actors</h2>
+        <p class="text-3xl font-bold text-green-600 mt-2">{{index . "total_actors"}}</p>
+    </div>
+
+    <!-- 4. Blocks -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Blocks</h2>
+        <p class="text-3xl font-bold text-orange-600 mt-2">{{index . "total_blocks"}}</p>
+    </div>
+
+    <!-- 5. Labels -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Labels</h2>
+        <p class="text-3xl font-bold text-red-600 mt-2">{{index . "total_labels"}}</p>
+    </div>
+
+    <!-- 6. Labelers -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Labelers</h2>
+        <p class="text-3xl font-bold text-yellow-600 mt-2">{{index . "total_labelers"}}</p>
+    </div>
+
+    <!-- 7. Lists -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">Total Lists</h2>
+        <p class="text-3xl font-bold text-purple-600 mt-2">{{index . "total_lists"}}</p>
+    </div>
+
+    <!-- 8. List Items (placed between Lists and List Blocks as requested) -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">List Items</h2>
+        <p class="text-3xl font-bold text-pink-600 mt-2">{{index . "total_list_items"}}</p>
+    </div>
+
+    <!-- 9. List Blocks -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-gray-500 text-sm font-semibold uppercase tracking-wider">List Blocks</h2>
+        <p class="text-3xl font-bold text-teal-600 mt-2">{{index . "total_list_blocks"}}</p>
+    </div>
+
+</div>
+{{end}}

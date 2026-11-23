@@ -1,0 +1,122 @@
+{{define "content"}}
+<div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl font-bold">Posts Search</h1>
+</div>
+
+<!-- Search Form -->
+<div class="bg-white p-4 rounded-lg shadow mb-6 w-full">
+    <!-- Use flex-col to stack form rows vertically -->
+    <form method="GET" action="/posts" class="flex flex-col gap-4 w-full">
+        
+        <!-- Row 1: URI, Keyword, Author DID -->
+        <div class="flex flex-wrap gap-4 w-full">
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">URI (exact)</label>
+                <input type="text" name="uri" value="{{.URI}}" placeholder="at://did:plc:.../app.bsky.feed.post/..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">Keyword</label>
+                <input type="text" name="keyword" value="{{.Keyword}}" placeholder="Search text..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">Author DID</label>
+                <input type="text" name="did" value="{{.DID}}" placeholder="did:plc:..." 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+        </div>
+
+        <!-- Row 2: Start Time, End Time -->
+        <div class="flex flex-wrap gap-4 w-full">
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">Start Time</label>
+                <input type="datetime-local" name="start" value="{{.StartTime}}" 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <div class="flex-1 min-w-[200px]">
+                <label class="block text-sm font-medium text-gray-700">End Time</label>
+                <input type="datetime-local" name="end" value="{{.EndTime}}" 
+                       class="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 focus:border-blue-500 focus:ring-blue-500">
+            </div>
+            <!-- Empty div to keep the time inputs from stretching full width -->
+            <div class="flex-1 min-w-[200px] hidden lg:block"></div>
+        </div>
+
+        <!-- Row 3: Buttons aligned right -->
+        <div class="flex justify-end gap-2 w-full mt-2">
+            <a href="/posts" class="bg-gray-200 text-gray-700 px-4 py-2 rounded shadow hover:bg-gray-300 inline-block whitespace-nowrap">
+                Reset
+            </a>
+            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 whitespace-nowrap">
+                Search
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Results Table -->
+<div class="bg-white rounded-lg shadow w-full">
+    <table class="min-w-full divide-y divide-gray-200 table-fixed">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="w-[18%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Received At</th>
+                <th class="w-[20%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
+                <th class="w-[42%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Text</th>
+                <th class="w-[10%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th class="w-[10%] px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {{range .Posts}}
+            <tr class="hover:bg-gray-50 transition-colors duration-150">
+                <td class="px-2 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {{ formatTime .ReceivedAt "2006-01-02 15:04" }}
+                </td>
+                <td class="px-2 py-4 text-sm font-medium text-blue-600 max-w-0 truncate" title="{{.DID}}">
+                    {{ truncate .DID 20 }}
+                </td>
+                <td class="px-2 py-4 text-sm text-gray-900 max-w-0 truncate" title="{{if .Text}}{{.Text}}{{else}}No text{{end}}">
+                    {{if .Text}}{{ truncate .Text 50 }}{{else}}<span class="text-gray-400 italic">No text</span>{{end}}
+                </td>
+                <td class="px-2 py-4 whitespace-nowrap text-sm">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                        {{.Status}}
+                    </span>
+                </td>
+                <td class="px-2 py-4 whitespace-nowrap text-sm">
+                    <a href="/post?uri={{.URI | urlquery}}" 
+                       class="text-blue-600 hover:text-blue-900 font-medium">
+                        Details
+                    </a>
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="5" class="px-6 py-10 text-center text-gray-500">
+                    No posts found matching your criteria.
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+<div class="mt-4 flex justify-between items-center w-full">
+    <div class="text-sm text-gray-600">
+        Showing limit: {{.Limit}} | Offset: {{.Offset}}
+    </div>
+    <div class="space-x-2">
+        {{if gt .Offset 0}}
+        <a href="/posts?uri={{.URI}}&keyword={{.Keyword}}&did={{.DID}}&start={{.StartTime}}&end={{.EndTime}}&limit={{.Limit}}&offset={{.Prev}}" 
+           class="bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded hover:bg-gray-50">Previous</a>
+        {{end}}
+        
+        {{if eq (len .Posts) .Limit}}
+        <a href="/posts?uri={{.URI}}&keyword={{.Keyword}}&did={{.DID}}&start={{.StartTime}}&end={{.EndTime}}&limit={{.Limit}}&offset={{.Next}}" 
+           class="bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded hover:bg-gray-50">Next</a>
+        {{end}}
+    </div>
+</div>
+{{end}}

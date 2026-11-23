@@ -1,0 +1,68 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">Labeler Details</h1>
+    <div class="space-x-4">
+        <!-- Jump to all labels issued by this labeler -->
+        <a href="/labels?src={{.DID | urlquery}}" class="text-blue-600 hover:underline">View Labels</a>
+        <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+    </div>
+</div>
+
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="border-t border-gray-200">
+        <dl>
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">DID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.DID}}</dd>
+            </div>
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Endpoint</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">
+                    {{if .Endpoint}}{{.Endpoint}}{{else}}<span class="text-gray-400 italic">N/A</span>{{end}}
+                </dd>
+            </div>
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Status</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                        {{if eq .Status "active"}}bg-green-100 text-green-800
+                        {{else if eq .Status "connect_failed"}}bg-red-100 text-red-800
+                        {{else if eq .Status "resolve_failed"}}bg-orange-100 text-orange-800
+                        {{else}}bg-yellow-100 text-yellow-800{{end}}">
+                        {{.Status}}
+                    </span>
+                </dd>
+            </div>
+            {{if .FailureType}}
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Failure Type</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 text-red-600">{{.FailureType}}</dd>
+            </div>
+            {{end}}
+            {{if .LastError}}
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Last Error</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 text-red-600 whitespace-pre-wrap">{{.LastError}}</dd>
+            </div>
+            {{end}}
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Fail Count</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">{{.FailCount}}</dd>
+            </div>
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Last Connected</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2">
+                    {{if not .LastConnected.IsZero}}{{ formatTime .LastConnected "2006-01-02 15:04:05" }}{{else}}<span class="text-gray-400 italic">Never</span>{{end}}
+                </dd>
+            </div>
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Timestamps</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 space-y-1">
+                    <div><span class="font-semibold text-gray-600">First Seen:</span> {{ formatTime .FirstSeen "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-semibold text-gray-600">Updated At:</span> {{ formatTime .UpdatedAt "2006-01-02 15:04:05" }}</div>
+                </dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}

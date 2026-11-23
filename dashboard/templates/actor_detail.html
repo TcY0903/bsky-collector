@@ -1,0 +1,84 @@
+{{define "content"}}
+<div class="mb-6 flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-800">Actor Details</h1>
+    <div class="space-x-4">
+        <!-- Jump to Posts filtered by this actor -->
+        <a href="/posts?did={{.DID | urlquery}}" class="text-blue-600 hover:underline">View posts by this actor</a>
+        <a href="javascript:history.back()" class="text-gray-600 hover:underline">← Back</a>
+    </div>
+</div>
+
+<!-- Profile Card -->
+<div class="bg-white shadow overflow-hidden sm:rounded-lg mb-6">
+    <!-- Banner -->
+    <div class="h-32 w-full bg-gray-200">
+        {{if .Banner}}
+            <img src="{{.Banner}}" alt="banner" class="w-full h-full object-cover">
+        {{end}}
+    </div>
+    
+    <div class="px-4 pb-5 sm:px-6">
+        <!-- Avatar -->
+        <div class="relative -mt-12 mb-2">
+            <div class="inline-block relative z-10">
+                {{if .Avatar}}
+                    <img src="{{.Avatar}}" alt="avatar" class="h-24 w-24 rounded-full border-4 border-white object-cover bg-white">
+                {{else}}
+                    <div class="h-24 w-24 rounded-full border-4 border-white bg-gray-300 flex items-center justify-center text-gray-500 text-sm">N/A</div>
+                {{end}}
+            </div>
+        </div>
+
+        <!-- Name, Handle, Status -->
+        <div class="flex justify-between items-start">
+            <div class="min-w-0">
+                <h2 class="text-2xl font-bold text-gray-900 truncate">{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Handle}}{{end}}</h2>
+                <p class="text-gray-500 truncate">@{{.Handle}}</p>
+            </div>
+            <div class="flex-shrink-0 ml-4">
+                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                    {{.Status}}
+                </span>
+            </div>
+        </div>
+        
+        <!-- Description -->
+        <div class="mt-4 text-sm text-gray-700 whitespace-pre-wrap">
+            {{if .Description}}{{.Description}}{{else}}<span class="text-gray-400 italic">No description</span>{{end}}
+        </div>
+    </div>
+</div>
+
+<!-- Stats and Metadata -->
+<div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+        <h3 class="text-lg leading-6 font-medium text-gray-900">Metadata</h3>
+    </div>
+    <div class="border-t border-gray-200">
+        <dl>
+            <!-- Stats -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Stats</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 flex gap-8">
+                    <div><span class="font-bold">{{.FollowersCount}}</span> Followers</div>
+                    <div><span class="font-bold">{{.FollowsCount}}</span> Follows</div>
+                    <div><span class="font-bold">{{.PostsCount}}</span> Posts</div>
+                </dd>
+            </div>
+            <!-- DID -->
+            <div class="bg-white px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">DID</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 break-all">{{.DID}}</dd>
+            </div>
+            <!-- Timestamps -->
+            <div class="bg-gray-50 px-4 py-5 sm:grid sm:grid-cols-3 sm:gap-4 sm:px-6">
+                <dt class="text-sm font-medium text-gray-500">Timestamps</dt>
+                <dd class="mt-1 text-sm text-gray-900 sm:mt-0 sm:col-span-2 space-y-1">
+                    <div><span class="font-semibold text-gray-600">Created At:</span> {{ formatTime .CreatedAt "2006-01-02 15:04:05" }}</div>
+                    <div><span class="font-semibold text-gray-600">Received At:</span> {{ formatTime .ReceivedAt "2006-01-02 15:04:05" }}</div>
+                </dd>
+            </div>
+        </dl>
+    </div>
+</div>
+{{end}}
