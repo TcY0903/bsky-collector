@@ -634,18 +634,78 @@ func (h *Handler) ThreadPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pre-parse media for each post
-	type postWithMedia struct {
-		Post  *models.Post
-		Media *models.PostMedia
+	// Build map uri -> depth (how many levels below root)
+	depth := make(map[string]int)
+	postByURI := make(map[string]*models.Post)
+	for _, p := range posts {
+		postByURI[p.URI] = p
 	}
-	var enriched []postWithMedia
+	// Root is the post with no ReplyParent (or the deepest ancestor)
+	var rootURI string
+	for _, p := range posts {
+		if p.ReplyParent == "" {
+			rootURI = p.URI
+			break
+		}
+	}
+	if rootURI == "" {
+		rootURI = posts[0].URI
+	}
+	depth[rootURI] = 0
+	// BFS over reply_parent relations
+	changed := true
+	for changed {
+		changed = false
+		for _, p := range posts {
+			if p.ReplyParent != "" {
+				if d, ok := depth[p.ReplyParent]; ok {
+					if _, seen := depth[p.URI]; !seen {
+						depth[p.URI] = d + 1
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	// Enrich posts with media, labels, depth, is_target
+	type postEnriched struct {
+		Post        *models.Post
+		Media       *models.PostMedia
+		Labels      []*models.Label
+		IndentClass string // e.g. "ml-0", "ml-6", "ml-12", ...
+		IsTarget    bool
+	}
+	var enriched []postEnriched
 	for _, p := range posts {
 		var media *models.PostMedia
 		if len(p.Media) > 0 {
 			_ = json.Unmarshal(p.Media, &media)
 		}
-		enriched = append(enriched, postWithMedia{Post: p, Media: media})
+
+		labels, err := h.db.GetLabelsByURI(p.URI)
+		if err != nil {
+			log.Printf("GetLabelsByURI error for %s: %v", p.URI, err)
+			labels = nil
+		}
+
+		// Map depth to a Tailwind margin-left class (max ~12 levels, then clamp)
+		classes := []string{
+			"ml-0", "ml-4", "ml-8", "ml-12", "ml-16", "ml-20",
+			"ml-24", "ml-28", "ml-32", "ml-36", "ml-40", "ml-44",
+		}
+		d := depth[p.URI]
+		if d >= len(classes) {
+			d = len(classes) - 1
+		}
+
+		enriched = append(enriched, postEnriched{
+			Post:        p,
+			Media:       media,
+			Labels:      labels,
+			IndentClass: classes[d],
+			IsTarget:    p.URI == uri,
+		})
 	}
 
 	render(w, "thread.html", map[string]interface{}{
